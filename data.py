@@ -17,6 +17,74 @@ GRAN_MS = {"1m": 60_000, "5m": 300_000, "15m": 900_000, "30m": 1_800_000,
            "1H": 3_600_000, "4H": 14_400_000, "1D": 86_400_000}
 
 
+SOURCE = {}          # 진단용: (심볼, 봉) → 실제로 쓴 거래소 / 마지막 오류
+OKX = "https://www.okx.com"
+
+
+def _okx_inst(symbol: str) -> str:
+    return symbol.replace("USDT", "") + "-USDT-SWAP"
+
+
+def _okx_get(path: str, params: dict):
+    r = requests.get(OKX + path, params=params, timeout=15); j = r.json()
+    if str(j.get("code")) != "0":
+        raise RuntimeError(f"OKX 요청 실패 {path}: {j}")
+    return j["data"]
+
+
+def _fetch_okx(symbol: str, gran: str, bars: int) -> pd.DataFrame:
+    """비트겟이 막혔을 때 대체: OKX 무기한 선물 캔들 (4H·1D는 비트겟과 같은 시각 경계)."""
+    rows, after = [], None
+    while len(rows) < bars:
+        p = {"instId": _okx_inst(symbol), "bar": gran, "limit": 100}
+        if after: p["after"] = after
+        d = _okx_get("/api/v5/market/history-candles", p)
+        if not d: break
+        rows += d; after = d[-1][0]; time.sleep(0.12)
+    if not rows: raise RuntimeError("OKX 캔들 없음")
+    df = pd.DataFrame([[int(x[0]), float(x[1]), float(x[2]), float(x[3]), float(x[4]), float(x[6]), float(x[7])] for x in rows],
+                      columns=["ts", "open", "high", "low", "close", "volume", "quote_vol"])
+    df.index = pd.to_datetime(df["ts"], unit="ms", utc=True); df.index.name = "time"
+    df = df.drop(columns=["ts"]).sort_index(); df = df[~df.index.duplicated(keep="last")]
+    return df.iloc[-bars:]
+
+
+CB = "https://api.exchange.coinbase.com"
+GRAN_H = {"1H": 1, "4H": 4, "1D": 24}
+
+
+def _cb_prod(symbol: str) -> str:
+    return symbol.replace("USDT", "") + "-USD"
+
+
+def _fetch_coinbase(symbol: str, gran: str, bars: int) -> pd.DataFrame:
+    """두 번째 대체: 코인베이스 현물(USD) 1시간 봉을 모아 4H(UTC 0·4·8시…)·1D(16시 UTC 시작, 비트겟과 같음)로 합침."""
+    gh = GRAN_H[gran]; t1 = pd.Timestamp.now(tz="UTC").floor("h") + pd.Timedelta(hours=1)
+    cur = t1 - pd.Timedelta(hours=gh * (bars + 2)); rows = []
+    while cur < t1:
+        end = min(cur + pd.Timedelta(hours=300), t1)
+        for k in range(3):
+            r = requests.get(f"{CB}/products/{_cb_prod(symbol)}/candles", params={"granularity": 3600, "start": cur.isoformat(), "end": end.isoformat()},
+                             timeout=15, headers={"User-Agent": "btceth-app"})
+            if r.status_code == 200: rows += r.json(); break
+            time.sleep(0.8 * (k + 1))
+        else:
+            raise RuntimeError(f"코인베이스 요청 실패 {r.status_code}")
+        cur = end; time.sleep(0.12)
+    if not rows: raise RuntimeError("코인베이스 캔들 없음")
+    h = pd.DataFrame(rows, columns=["ts", "low", "high", "open", "close", "volume"]).astype(float)
+    h.index = pd.to_datetime(h["ts"].astype("int64"), unit="s", utc=True); h = h.drop(columns="ts").sort_index(); h = h[~h.index.duplicated()]
+    h["quote_vol"] = h["volume"] * h["close"]
+    if gh == 1:
+        df = h
+    else:
+        rs = h.resample(f"{gh}h", origin="epoch", offset="16h" if gh == 24 else "0h", label="left", closed="left")
+        df = rs.agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum", "quote_vol": "sum"})
+        cnt = rs["close"].count(); df = df[(cnt >= gh) | (df.index == df.index[-1])].dropna()
+    df.index.name = "time"
+    return df[["open", "high", "low", "close", "volume", "quote_vol"]].iloc[-bars:]
+
+
 def _get(path: str, params: dict | None = None, retries: int = 4):
     last = None
     for k in range(retries):
@@ -42,13 +110,40 @@ def _to_df(rows) -> pd.DataFrame:
 
 
 def fetch_candles(symbol: str, gran: str = "1H", bars: int = 1000, end_ms: int | None = None) -> pd.DataFrame:
-    """최근 bars개 캔들(오래된→최신). history-candles를 200개씩 거슬러 올라가며 수집."""
+    """최근 bars개 캔들. 비트겟 우선, 막히면 OKX로 자동 대체 (과거 구간 지정 end_ms는 비트겟만)."""
+    try:
+        df = _fetch_bitget(symbol, gran, bars, end_ms)
+        SOURCE[(symbol, gran)] = "Bitget"
+        return df
+    except Exception as e:
+        if end_ms is not None:
+            raise
+        e1 = str(e)[:120]
+    try:
+        df = _fetch_okx(symbol, gran, bars)
+        SOURCE[(symbol, gran)] = f"OKX (비트겟 실패: {e1})"
+        return df
+    except Exception as e:
+        e2 = str(e)[:120]
+    try:
+        df = _fetch_coinbase(symbol, gran, bars)
+        SOURCE[(symbol, gran)] = f"코인베이스 현물 (비트겟 실패: {e1} / OKX 실패: {e2})"
+        return df
+    except Exception as e:
+        SOURCE[(symbol, gran)] = f"모두 실패 — 비트겟: {e1} / OKX: {e2} / 코인베이스: {str(e)[:120]}"
+        raise RuntimeError(SOURCE[(symbol, gran)])
+
+
+def _fetch_bitget(symbol: str, gran: str = "1H", bars: int = 1000, end_ms: int | None = None) -> pd.DataFrame:
+    """history-candles를 200개씩 거슬러 올라가며 수집."""
     frames, end = [], end_ms or int(time.time() * 1000) + GRAN_MS[gran]
+    first = True
     got = 0
     while got < bars:
         rows = _get("/api/v2/mix/market/history-candles",
                     {"symbol": symbol, "productType": PT, "granularity": gran,
-                     "endTime": end, "limit": 200})
+                     "endTime": end, "limit": 200}, retries=2 if first else 4)
+        first = False
         if not rows:
             break
         d = _to_df(rows)
@@ -101,7 +196,16 @@ def load_history(symbol: str, gran: str = "1H", days: int = 730, refresh: bool =
 
 # ───────────── 파생상품 지표 ─────────────
 def ticker(symbol: str) -> dict:
-    return _get("/api/v2/mix/market/ticker", {"symbol": symbol, "productType": PT})[0]
+    try:
+        return _get("/api/v2/mix/market/ticker", {"symbol": symbol, "productType": PT}, retries=2)[0]
+    except Exception:
+        pass
+    try:
+        d = _okx_get("/api/v5/market/ticker", {"instId": _okx_inst(symbol)})[0]
+        return {"lastPr": d["last"], "bidPr": d["bidPx"], "askPr": d["askPx"], "src": "OKX"}
+    except Exception:
+        d = requests.get(f"{CB}/products/{_cb_prod(symbol)}/ticker", timeout=10, headers={"User-Agent": "btceth-app"}).json()
+        return {"lastPr": d["price"], "bidPr": d["bid"], "askPr": d["ask"], "src": "코인베이스"}
 
 
 def funding_current(symbol: str) -> float:

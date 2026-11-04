@@ -45,6 +45,7 @@ TRAP = bool(trap_on) and not SWING
 def load(symbol: str):
     df = data.drop_unclosed(data.fetch_candles(symbol, "4H", 1600), "4H")   # 주봉 26주 추세용 여유
     v = RL.one(df)
+    v["src"] = data.SOURCE.get((symbol, "4H"), "Bitget")
     v["pos_prev"] = RL.one(df.iloc[:-1])["pos"]          # 직전 마감 기준 목표 (방금 바뀌었는지 표시용)
     try:
         import mtf_live as ML
@@ -219,12 +220,49 @@ if SWING:
 
 st.caption("4시간 봉 마감(01·05·09·13·17·21시 KST) 직후 확인 → '지금 들고 있을 포지션'에 내 포지션을 맞추기. 장중에는 가격표만 보고 기다림. 수익을 보장하지 않습니다.")
 
+def render_diag(expanded=False):
+    """접속 진단: 어느 시세 서버가 되는지, 어떤 버전으로 돌고 있는지."""
+    with st.expander("△ 접속 진단", expanded=expanded):
+        if st.button("지금 다시 검사", key="diag_btn"):
+            st.cache_data.clear()
+        import sys, platform, time as _t, requests as _rq
+        tests = [("비트겟 (기본)", "https://api.bitget.com/api/v2/mix/market/ticker", {"symbol": "BTCUSDT", "productType": "USDT-FUTURES"}),
+                 ("OKX (1차 대체)", "https://www.okx.com/api/v5/market/ticker", {"instId": "BTC-USDT-SWAP"}),
+                 ("코인베이스 (2차 대체)", "https://api.exchange.coinbase.com/products/BTC-USD/ticker", None),
+                 ("공포·탐욕 지수", "https://api.alternative.me/fng/", {"limit": 1})]
+        out = []
+        for nm_, url, p in tests:
+            t0 = _t.time()
+            try:
+                r = _rq.get(url, params=p, timeout=8, headers={"User-Agent": "btceth-app"})
+                out.append((nm_, "되는 중" if r.status_code == 200 else f"막힘 (HTTP {r.status_code})", f"{(_t.time() - t0) * 1000:.0f} ms", r.text[:80].replace("\n", " ")))
+            except Exception as e:
+                out.append((nm_, "접속 실패", "-", str(e)[:80]))
+        st.dataframe(pd.DataFrame(out, columns=["시세 서버", "상태", "응답", "내용 앞부분"]), hide_index=True, width="stretch")
+        used = {COINS[s]: (rows[s][1].get("src", "?") if s in rows else "불러오기 실패") for s in COINS}
+        st.caption("지금 화면에 쓴 시세: " + " · ".join(f"{k} {v_}" for k, v_ in used.items()))
+        import importlib.metadata as _md
+        vers = []
+        for pk in ("streamlit", "pandas", "numpy", "plotly", "scikit-learn", "scipy", "requests"):
+            try: vers.append(f"{pk} {_md.version(pk)}")
+            except Exception: vers.append(f"{pk} 없음")
+        st.caption(f"파이썬 {platform.python_version()} · " + " · ".join(vers))
+        st.caption("셋 다 '막힘'이면 그 서버에서 시세를 못 받는 것 → 내 PC에서 실행. 하나라도 '되는 중'이면 자동으로 그걸 씀.")
+
+
 rows = {}
+errs = {}
 for sym, nm in COINS.items():
     try:
         rows[sym] = load(sym)
     except Exception as e:
+        errs[nm] = str(e)
         st.warning(f"{nm} 데이터 오류: {e}")
+if errs:
+    render_diag(expanded=True)
+_alt = {COINS[s]: rows[s][1].get("src", "") for s in rows if not str(rows[s][1].get("src", "Bitget")).startswith("Bitget")}
+if _alt:
+    st.caption("시세 대체 중 · " + " · ".join(f"{k}: {v_.split(' (')[0]}" for k, v_ in _alt.items()) + " (비트겟 접속이 막혀 자동 전환 — 가격 차이 0.01~0.05% 수준)")
 
 _fg = fear_greed()
 if _fg:
@@ -484,3 +522,5 @@ with st.expander("△ 검증 성적 (5년, 과장 없이)", expanded=False):
     st.caption("한계: 펀딩비는 맨 위 줄 비고만 반영, 미래에도 같다는 보장 없음, 하루 1% 복리 수준과는 거리가 멂. 소액일 때는 실제 주문 전 일지에 모의로 먼저 기록 권장.")
 
 render_journal()
+if not errs:
+    render_diag(expanded=False)
