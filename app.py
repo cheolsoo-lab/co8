@@ -32,6 +32,7 @@ with st.expander("△ 설정", expanded=False):
     mtf_on = st.checkbox("흐름 정렬 역가중 (권장·기본) — 주봉·일봉·4시간이 모두 같으면 ½, 4시간이 둘 다 거스르면 1.5배", True, key="mtf_on")
     shape_on = st.checkbox("두 달 모양 반반 운용 (실험) — 4시간 방식 절반 + 일봉 60일 모양 절반을 한 수량으로 합침", False, key="shape_on")
     trap_on = st.checkbox("베어트랩 추가 (엄격 기준 통과 · 설정값 민감) — 직전 저점을 깼다가 3봉 안에 되돌아오면 24시간 롱 추가", False, key="trap_on")
+    wp_on = st.checkbox("횡보면 절반 (실험) — 최근 5일(30봉) 효율비가 0.3 미만(횡보)이면 크기 ½ · 옛 엄격 판정은 통과(샤프 1.36→1.53), 새 우주 검증 2개는 미통과", False, key="wp_on")
     mode = st.radio("매매 방식 (하나만 고르기 — 둘은 보는 기간이 달라 서로 다른 말을 할 수 있음)",
                     ["4시간 추세 — 롱·숏 모두 (기본·권장, 낙폭 작음)", "스윙 — 길게 먹기 (롱만, 최근 5년 성적 약함, 낙폭 큼)"], key="mode")
 SWING = mode.startswith("스윙")
@@ -39,6 +40,7 @@ MAKER = order.startswith("지정가")
 MTF = bool(mtf_on)
 SHAPE = bool(shape_on) and not SWING
 TRAP = bool(trap_on) and not SWING
+WP = bool(wp_on) and not SWING
 
 
 @st.cache_data(ttl=600, show_spinner="4H 봉 읽는 중…")
@@ -46,6 +48,11 @@ def load(symbol: str):
     df = data.drop_unclosed(data.fetch_candles(symbol, "4H", 1600), "4H")   # 주봉 26주 추세용 여유
     v = RL.one(df)
     v["src"] = data.SOURCE.get((symbol, "4H"), "Bitget")
+    try:
+        import cosmos_live as CL
+        v["er"] = CL.er_state(df); v["er_prev"] = CL.er_state(df.iloc[:-1])
+    except Exception:
+        v["er"] = v["er_prev"] = None
     v["pos_prev"] = RL.one(df.iloc[:-1])["pos"]          # 직전 마감 기준 목표 (방금 바뀌었는지 표시용)
     try:
         import mtf_live as ML
@@ -321,7 +328,11 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     import mtf_live as ML
     mstate = v.get("mtf") if (MTF and not SWING) else None
     fx = (lambda p: ML.factor(float(np.sign(p)), mstate)[0]) if mstate else (lambda p: 1.0)
-    notional = k * (wt * v["pos"] * fx(v["pos"]) + sp + tp)
+    import cosmos_live as CL
+    ers = v.get("er") if WP else None
+    wf = CL.factor(ers)                                                   # 지금 봉 기준 직진 1 / 횡보 ½
+    wfx = (lambda r: CL.factor(ers, CL.mid(r))) if ers else (lambda r: 1.0)
+    notional = k * (wt * v["pos"] * fx(v["pos"]) * wf + sp + tp)
     px = live_px(sym); last = px[0] if px else v["close"]
     stp = STEP[sym]; dq = max(0, -int(np.floor(np.log10(stp))))
     q_now = qty(notional, last, stp); has = q_now != 0
@@ -339,9 +350,9 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     else:
         b.metric("진입 가격 (지금)", "-", "포지션 없음", delta_color="off")
     # 다음 마감 기준 가장 가까운 '할 일이 생기는' 가격 (위·아래)
-    T = v["trig"]; up = dn = None
+    T = CL.split_rows(v["trig"], ers) if ers else v["trig"]; up = dn = None
     for r in T:
-        act = todo(notional, k * (wt * r["pos"] * fx(r["pos"]) + sp + tp_next), last, stp, nm)
+        act = todo(notional, k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) + sp + tp_next), last, stp, nm)
         if act == "유지" or act.startswith("없음"): continue
         if r["lo"] >= v["close"] - 1e-9 and (up is None or r["lo"] < up[0]): up = (r["lo"], act)
         if r["hi"] <= v["close"] + 1e-9 and (dn is None or r["hi"] > dn[0]): dn = (r["hi"], act)
@@ -354,7 +365,7 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     if has:
         strength = "(강)" if "(강)" in vd else "(약)"
         if not vd.startswith(side): strength = "(신호 약해짐 · 유지)"
-    q_prev = qty(k * (wt * v["pos_prev"] * fx(v["pos_prev"]) + sp + tp), last, stp)
+    q_prev = qty(k * (wt * v["pos_prev"] * fx(v["pos_prev"]) * CL.factor(v.get("er_prev") if WP else None) + sp + tp), last, stp)
     change = (f"방금 바뀜 ({close_t:%H:%M} 마감): {desc(q_prev, nm, dq)} → {desc(q_now, nm, dq)}" if q_prev != q_now else "")
     qline = (f"{abs(q_now):.{dq}f} {nm} · 약 {abs(q_now)*last:,.0f} USDT" if has else "포지션 없음")
     flow = "<br>".join(lines) if lines else "다음 마감까지 어느 가격이든 유지"
@@ -381,13 +392,17 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         st.markdown(badge(nm, f"${last:,.{2 if sym == 'ETHUSDT' else 1}f}", word, strength, qline, change, flow, next_t, mood), unsafe_allow_html=True)
     c_.metric(f"전환 가격 ({next_t:%H:%M} 마감 기준)", lines[0].split(" → ")[0] if lines else "변화 없음",
               " / ".join(l.split(" → ")[1] for l in lines[:1]) if lines else "어느 가격에 마감해도 유지", delta_color="off")
-    tb = []
-    for r in reversed(T):
-        lo = "" if not np.isfinite(r["lo"]) else f"{r['lo']:,.1f}"; hi = "" if not np.isfinite(r["hi"]) else f"{r['hi']:,.1f}"
-        rng = f"{lo} 위" if not hi else (f"{hi} 아래" if not lo else f"{lo} ~ {hi}")
-        tgt = qty(k * (wt * r["pos"] * fx(r["pos"]) + sp + tp_next), last, stp); here = r["lo"] <= last < r["hi"]
+    tb = []; seg = []
+    for r in reversed(T):                                   # 위 가격대 → 아래, 같은 결과가 이어지면 한 줄로
+        tgt = qty(k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) + sp + tp_next), last, stp)
+        act = todo(notional, k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) + sp + tp_next), last, stp, nm)
+        if seg and seg[-1][2] == tgt and seg[-1][3] == act: seg[-1][0] = r["lo"]
+        else: seg.append([r["lo"], r["hi"], tgt, act])
+    for lo_, hi_, tgt, act in seg:
+        lo = "" if not np.isfinite(lo_) else f"{lo_:,.1f}"; hi = "" if not np.isfinite(hi_) else f"{hi_:,.1f}"
+        rng = f"{lo} 위" if not hi else (f"{hi} 아래" if not lo else f"{lo} ~ {hi}"); here = lo_ <= last < hi_
         tb.append({"다음 4H 마감가": rng + ("  ← 지금" if here else ""), "그때 포지션": (f"{'숏' if tgt < 0 else '롱'} {abs(tgt):.{dq}f} {nm} (약 {abs(tgt)*last:,.0f} USDT)" if tgt else "없음"),
-                   "할 일": todo(notional, k * (wt * r["pos"] * fx(r["pos"]) + sp + tp_next), last, stp, nm)})
+                   "할 일": act})
     st.dataframe(pd.DataFrame(tb), hide_index=True, width="stretch")
     sr = []
     if np.isfinite(v["res"]): sr.append(f"저항 {v['res']:,.1f}")
@@ -395,6 +410,11 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     st.caption(f"{RL.verdict(v['dir'])} · 점수 {v['dir']:+.2f} (추세 {v['tsmom']:+.2f} / 호흡 {v['breath']:+.2f}) · " + " · ".join(sr)
                + f" · 기준: {close_t:%m-%d %H:%M} 마감 봉 · 장중에 전환 가격을 찍었다가 돌아오면 무시 (마감가만 봄)"
                + (" · Post-only 지정가, 30분 안에 안 채워지면 시장가" if MAKER else ""))
+    if v.get("er"):
+        e_ = v["er"]
+        st.caption(f"지금 결 · 최근 5일 효율비 {e_['er']:.2f} → **{e_['mode']}**" + (" (입자처럼 한 방향으로 감)" if e_["mode"] == "직진" else " (파동처럼 오르내림)")
+                   + " — 5년간 이 앱의 수익은 거의 전부 직진 구간(시간의 25%, 샤프 +2.9)에서 나왔고 횡보 구간(75%)은 본전(−0.2). 횡보에서 박스 하단 롱·상단 숏은 손실(샤프 −0.2)"
+                   + (" · 설정 '횡보면 절반' 켜짐 → 이번 크기 ×" + f"{wf:g}" if WP else " · 설정에서 '횡보면 절반(실험)'을 켜면 횡보 때 크기 ½"))
     if v.get("regime"):
         st.caption(f"지금 상황 · {v['regime']} (30일 흐름 × 최근 변동성) — 상황마다 방법을 바꾸면 5년 검증에서 크게 나빠져서(샤프 1.37 → 0.04~0.56) 방법은 그대로, 크기만 변동성에 맞춰 자동 조절")
     if tr_:
@@ -482,6 +502,40 @@ with st.expander("△ 4원칙 — 이 매매법이 따르는 원리 (5년 검증
 **④ 모두가 아는 자리는 잘 안 온다 — 둥근 숫자는 거짓, '손절 자리'는 참**
 - BTC 80,000·ETH 2,500 같은 둥근 숫자도 다른 가격대와 똑같이 93~96% 도달함.
 - 진짜는 **모두가 손절을 걸어둔 직전 저점 아래를 쓸고 3봉 안에 되돌아오는 베어트랩** → 롱 (적중 58%, 앱과 합산 샤프 1.04 → 1.26). 반대(불트랩)는 안 통함. 설정에서 '베어트랩 추가'로 켬 (설정값을 바꾸면 약해지는 점은 주의).
+""")
+
+with st.expander("△ 우주·물리 렌즈 17개 — 평행우주 검증 (11-05)", expanded=False):
+    try:
+        import cosmos_live as CL
+        _ph, _pn = CL.moon(); st.caption(f"오늘 · 달 {_pn} (위상 {_ph:.2f}) · 2024-04-20 반감기 뒤 {CL.halving_days()}일 — 둘 다 판단에 쓰지 않음 (아래 ⑤·⑦)")
+    except Exception:
+        pass
+    st.markdown("""
+**새 검증법 '평행우주'** — 실제 BTC 성적을 수천 개의 가짜 우주와 비교: ① 포지션을 시간축에서 통째로 민 우주 1000개(롱 편향·매매 횟수는 그대로, 타이밍만 무작위) ② 매 봉 움직임 크기는 그대로 두고 방향만 무작위로 뒤집은 '거울 우주' 200개 ③ 시간을 거꾸로 돌린 우주 ④ ETH 쌍둥이 ⑤ 마지막 1년 ⑥ 설정값을 바꾼 이웃 우주. 실제가 가짜들의 상위 5% 밖이면 '우연'.
+
+| 렌즈 | 관점 | BTC 5년 | 결과 |
+|---|---|---|---|
+| 현재 앱 (추세+호흡) | 기준 | 샤프 +0.87 · 가짜 우주 상위 1% | **통과** — 새 방식으로도 우연 아님 확인 |
+| 오를 때 롱·내릴 때 숏 (5일 효율비 ≥ 0.3일 때) | 양자: 입자 | +1.15 · ETH +1.02 | **통과** — 단 뒤 절반 +0.29로 약해짐, 앱에 더하면 개선 +0.09로 기준(+0.10) 미달 |
+| 횡보 때 박스 하단 롱·상단 숏 | 양자: 파동 | −0.21 · ETH −0.41 | 탈락 — 이걸 붙이면 위 규칙이 1.15 → 0.58로 나빠짐 |
+| 수축 뒤 첫 이탈 따라가기 | 양자: 측정 붕괴 | −0.15 | 탈락 |
+| 변동의 양으로 잰 시간(고유시간) 추세 | 상대성 | +0.31 | 탈락 (우연 범위) |
+| 광속 근접 시 크기 축소 | 상대성: 로렌츠 인자 | −0.13 | 탈락 |
+| 닮은 과거 궤적 다수결 | 혼돈: 로렌츠 아날로그 | −0.96 | 탈락 |
+| 칼만 입자 추적 | 물리: 상태추정 | +0.16 | 탈락 |
+| 티핑 포인트 조기경보(자기상관·분산 상승) | 열역학·생태학 | −0.03 · 전환 구별력 0.45~0.54 | 탈락 |
+| BTC·ETH 상관 붕괴 시 ½ | 양자: 얽힘 | +0.13 | 탈락 (보정 후 우연 범위, 최근 1년 나빠짐) |
+| 렌즈 합의만큼 키움 | 노자: 무위 | −0.02 | 탈락 |
+| 최근 1년 잘 맞은 쪽에 가중 | 헤라클레이토스 | +0.51 | 탈락 (앱 단독보다 못함) |
+| 횡보면 ½ (설정의 실험 옵션) | 상황 적용 | 개선 +0.22, 앱 1.36→1.53 | 옛 판정 통과 · 거울 우주(p=0.11)·이웃 설정(67%) 미통과 → **실험** |
+| 달: 신월 롱·보름 숏 (11년 일봉) | 우주 | +0.18 (뒤 절반 −0.16) | 탈락 |
+| 지구 자기장 폭풍 뒤 6일 | 우주 | 오히려 폭풍 뒤가 더 오름 | 탈락 |
+| 태양 활동 / 계절(월) | 우주 | +0.36 / +0.19 (뒤 절반 무너짐) | 탈락 |
+| 황금비 0.382·0.5·0.618·0.786 | 자연의 수 | 0.45·0.55·0.70과 똑같음 | 특별하지 않음 |
+
+- **시간의 화살**: 가격을 거꾸로 돌리면 같은 앱 방법이 손실(BTC +1.13 → −0.59). 그런데 '선형 기억'(자기상관)은 0.006으로 정·역방향이 같음 → 앱이 먹는 것은 반복 패턴이 아니라 **되돌릴 수 없는 흐름**(사람들이 늦게 알아채고 따라붙는 과정).
+- **되돌림 진입**: 어느 깊이(0.3~0.8)에서 추세 방향으로 들어가도 무작위보다 스윙 크기의 +5% 안팎 유리 — 추세가 이어지는 성질 때문이고 황금비 자리만의 힘은 없음.
+- **반감기**: 세 번 모두 반감기 뒤 525~546일에 고점, 이후 약 1년 −53~−84%. 지금 929일째. 표본 3개 → 통계 검증 불가, 참고만.
 """)
 
 with st.expander("△ 규칙 (한 번 읽어두기)", expanded=False):
