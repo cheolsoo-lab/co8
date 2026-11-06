@@ -224,7 +224,7 @@ if SWING:
     render_journal()
     st.stop()
 
-st.caption("4시간 봉 마감(01·05·09·13·17·21시 KST) 직후 확인 → '지금 들고 있을 포지션'에 내 포지션을 맞추기. 장중에는 가격표만 보고 기다림. 수익을 보장하지 않습니다.")
+st.caption("4시간 마감(01·05·09·13·17·21시) 직후 확인 · 마감가 기준 · 수익 보장 없음")
 
 def render_diag(expanded=False):
     """접속 진단: 어느 시세 서버가 되는지, 어떤 버전으로 돌고 있는지."""
@@ -268,7 +268,7 @@ if errs:
     render_diag(expanded=True)
 _alt = {COINS[s]: rows[s][1].get("src", "") for s in rows if not str(rows[s][1].get("src", "Bitget")).startswith("Bitget")}
 if _alt:
-    st.caption("시세 대체 중 · " + " · ".join(f"{k}: {v_.split(' (')[0]}" for k, v_ in _alt.items()) + " (비트겟 접속이 막혀 자동 전환 — 가격 차이 0.01~0.05% 수준)")
+    st.caption("시세 대체 · " + " · ".join(f"{k} {v_.split(' (')[0]}" for k, v_ in _alt.items()) + " (비트겟 막힘)")
 
 @st.cache_data(ttl=3600, show_spinner="일봉(거시) 읽는 중…")
 def load_macro(symbol: str):
@@ -283,13 +283,25 @@ for _s, _n in COINS.items():
         MAC[_n] = load_macro(_s)
     except Exception:
         MAC[_n] = None
-if any(MAC.values()):
-    st.caption("거시 · " + " · ".join(f"{n} {m['label']} (합의 {m['mval']:+.2f}, 1년 고점 대비 {m['dd1y']:+.0%})" for n, m in MAC.items() if m)
-               + " — 참고만: 거시는 고점·바닥 뒤 평균 3~4달 늦게 바뀌고, 거시로 앱을 거르면 11년 검증에서 12가지 모두 나빠짐 (앱은 상승장·하락장 모두에서 롱·숏 양쪽으로 벌었음)")
+@st.cache_data(ttl=3600, show_spinner=False)
+def load_dom():
+    import dominance_live as DL
+    return DL.state()
+
+
+try:
+    DOM = load_dom()
+except Exception:
+    DOM = None
 _fg = fear_greed()
+_top = []
+if any(MAC.values()):
+    _top.append("거시 " + " · ".join(f"{n} {m['label']}" for n, m in MAC.items() if m))
 if _fg:
     _kr = {"Extreme Fear": "극단 공포", "Fear": "공포", "Neutral": "중립", "Greed": "탐욕", "Extreme Greed": "극단 탐욕"}.get(_fg[1], _fg[1])
-    st.caption(f"시장 심리 · 공포·탐욕 지수 {_fg[0]} ({_kr}, 어제 {_fg[2]}) — 참고용: 8년 검증에서 '공포에 사기'는 효과 없었고, 지수만으로 매매하면 최근 5년 샤프 −0.04")
+    _top.append(f"공포·탐욕 {_fg[0]} {_kr}")
+if _top:
+    st.caption(" │ ".join(_top) + " — 참고 (매매엔 안 씀)")
 # 배지 색: (배경, 테두리, 왼쪽 강조선·글자색, 표시) — 은은한 바탕 + 진한 글자
 BADGE = {"롱": ("#f0f8f3", "#d3eadb", "#1f7a45", "롱 ▲"), "숏": ("#fcf2f2", "#f1d4d4", "#b23b3b", "숏 ▼"), "관망": ("#f5f6f8", "#e3e6ea", "#5b6270", "관망 ―")}
 badge_cols = st.columns(len(COINS))
@@ -388,21 +400,30 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     if v.get("fake_streak") is not None:
         mx = FAKE_RUNS.get(sym, {}).get("max_run")
         if v.get("open_ret") is not None and has:
-            mood = f"지금 방향 {'+' if v['open_ret'] >= 0 else ''}{v['open_ret']:.1%} · "
-        mood += f"직전까지 가짜 전환 연속 {v['fake_streak']}번" + (f" (5년 최장 {mx}번)" if mx else "")
-        if change: mood += " · 새 방향의 74%는 가짜(평균 −0.6%, 2.4일), 26%가 진짜(평균 +2.6%, 8.4일) — 가짜는 진짜를 잡는 입장료"
+            mood = f"이번 방향 {'+' if v['open_ret'] >= 0 else ''}{v['open_ret']:.1%} · "
+        mood += f"가짜 전환 연속 {v['fake_streak']}번" + (f" (최장 {mx})" if mx else "")
+        if change: mood += " · 새 방향 4번 중 3번은 가짜"
     if v.get("mtf"):
         arw = lambda x: "▲" if x > 0 else ("▼" if x < 0 else "―")
         f_, ag_ = ML.factor(float(np.sign(v["pos"])), v["mtf"])
-        tag = {2: "모두 같음 = 늙은 추세 → 크기 ½", 1: "하나만 같음 → 크기 그대로", 0: "4시간이 큰 흐름을 거스름 = 새 흐름 태동 → 1.5배"}.get(ag_, "포지션 없음")
-        mood = f"흐름 · 주봉 {arw(v['mtf']['dW'])} 일봉 {arw(v['mtf']['dD'])} 4시간 {arw(v['pos'])} — {tag}" + ("" if MTF else " (설정에서 꺼짐)") + ("<br>" + mood if mood else "")
+        tag = {2: "크기 ½", 1: "크기 그대로", 0: "크기 1.5배"}.get(ag_, "")
+        mood = f"주 {arw(v['mtf']['dW'])} 일 {arw(v['mtf']['dD'])} 4H {arw(v['pos'])}" + (f" · {tag}" if (tag and MTF) else "") + ("<br>" + mood if mood else "")
         wsg = float(np.sign(v["mtf"]["dW"]))
         if wsg != 0:
             import topdown as TD
             code = int(wsg > 0) * 4 + int(np.sign(v["mtf"]["dD"]) == wsg) * 2 + int(np.sign(v["dir"]) == wsg)
             tdi = TOPDOWN.get(str(code))
             if tdi:
-                mood = f"상태 · {TD.label(code)} — 4주 안 주봉 흐름 전환 확률 {tdi['flip']:.0%} (5년 평균 47%)<br>" + mood
+                mood = f"{TD.label(code).replace(' · ', '·')} · 4주 내 전환 {tdi['flip']:.0%}<br>" + mood
+    if DOM:
+        import dominance_live as DL
+        mood += "<br>" if mood else ""
+        if sym == "BTCUSDT":
+            mood += (f"USDT.D {DOM['usdt_d']:.2f}% · 7일 {DL.label(DOM['u_z7'])}({DOM['u_z7']:+.1f}σ) · 1년 범위 {DOM['u_lvl']:.0%} · BTC.D {DOM['btc_d']:.1f}% {DL.arrow(DOM['btc_d_tr'])}"
+                     if "u_z7" in DOM else f"USDT.D {DOM['usdt_d']:.2f}% {DL.arrow(DOM['usdt_d_tr'])} · BTC.D {DOM['btc_d']:.1f}% {DL.arrow(DOM['btc_d_tr'])}")
+        else:
+            mood += (f"TOTAL3 7일 {DL.label(DOM['t3_z7'])}({DOM['t3_z7']:+.1f}σ) · 30일 {DL.label(DOM['t3_z30'])}({DOM['t3_z30']:+.1f}σ) · 알트 비중 {DL.arrow(DOM['alt_tr'])}"
+                     if "t3_z7" in DOM else f"TOTAL3 {DL.arrow(DOM['t3_tr'])} · 알트 비중 {DL.arrow(DOM['alt_tr'])}")
     with badge_cols[i_c]:
         st.markdown(badge(nm, f"${last:,.{2 if sym == 'ETHUSDT' else 1}f}", word, strength, qline, change, flow, next_t, mood), unsafe_allow_html=True)
     c_.metric(f"전환 가격 ({next_t:%H:%M} 마감 기준)", lines[0].split(" → ")[0] if lines else "변화 없음",
@@ -423,22 +444,20 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     if np.isfinite(v["res"]): sr.append(f"저항 {v['res']:,.1f}")
     if np.isfinite(v["sup"]): sr.append(f"지지 {v['sup']:,.1f}")
     st.caption(f"{RL.verdict(v['dir'])} · 점수 {v['dir']:+.2f} (추세 {v['tsmom']:+.2f} / 호흡 {v['breath']:+.2f}) · " + " · ".join(sr)
-               + f" · 기준: {close_t:%m-%d %H:%M} 마감 봉 · 장중에 전환 가격을 찍었다가 돌아오면 무시 (마감가만 봄)"
-               + (" · Post-only 지정가, 30분 안에 안 채워지면 시장가" if MAKER else ""))
+               + f" · {close_t:%m-%d %H:%M} 마감 기준" + (" · 지정가(30분 미체결 시 시장가)" if MAKER else ""))
     if v.get("er"):
         e_ = v["er"]
-        st.caption(f"지금 결 · 최근 5일 효율비 {e_['er']:.2f} → **{e_['mode']}**" + (" (입자처럼 한 방향으로 감)" if e_["mode"] == "직진" else " (파동처럼 오르내림)")
-                   + " — 이 앱의 수익은 거의 전부 직진 구간(시간의 25%)에서 나오고 횡보 구간(75%)은 본전~작은 손실. 횡보에서 박스 하단 롱·상단 숏은 손실. 횡보라고 크기를 줄이는 것도 11년 확인에서 나빠짐 → 그대로 따르기")
+        st.caption(f"결 · {e_['mode']} (효율비 {e_['er']:.2f}) — " + ("수익이 나는 구간" if e_["mode"] == "직진" else "본전 구간, 그대로 따르기"))
     if v.get("regime"):
-        st.caption(f"지금 상황 · {v['regime']} (30일 흐름 × 최근 변동성) — 상황마다 방법을 바꾸면 5년 검증에서 크게 나빠져서(샤프 1.37 → 0.04~0.56) 방법은 그대로, 크기만 변동성에 맞춰 자동 조절")
+        st.caption(f"상황 · {v['regime']} — 방법은 고정, 크기만 변동성에 맞춤")
     if tr_:
         if tr_.get("active", 0) > 0:
             ttxt = f"발생 ({pd.Timestamp(tr_['last_event']).tz_convert('Asia/Seoul'):%m-%d %H:%M} 마감) → 롱 유지 남은 {tr_['active_left']}봉"
         elif tr_.get("armed_level"):
-            ttxt = f"대기 — 직전 저점 {tr_['armed_level']:,.1f} 하향 이탈. {tr_['armed_left']}봉 안에 그 위로 마감하면 베어트랩 롱" + (f" (+{k*tr_['cap']:,.0f} USDT 추가)" if TRAP else "")
+            ttxt = f"대기 — {tr_['armed_level']:,.1f} 위로 {tr_['armed_left']}봉 안에 마감하면 롱" + (f" (+{k*tr_['cap']:,.0f} USDT)" if TRAP else "")
         else:
-            ttxt = f"없음 · 감시 중인 직전 저점 {tr_['last_low']:,.1f} (종가로 깨졌다가 3봉 안에 복귀하면 신호)" if tr_.get("last_low") else "없음"
-        st.caption(f"패턴 감시 · 베어트랩: {ttxt}" + ("" if TRAP else " · 설정에서 '베어트랩 추가'를 켜야 수량에 반영"))
+            ttxt = f"없음 · 감시 저점 {tr_['last_low']:,.1f}" if tr_.get("last_low") else "없음"
+        st.caption(f"베어트랩 · {ttxt}" + ("" if TRAP else " (설정에서 켜야 반영)"))
     if sv:
         side_s = "롱" if sv["side"] > 0 else "숏"; held = "롱" if sv["held_side"] > 0 else ("숏" if sv["held_side"] < 0 else "없음")
         mte = f"{sv['m_te']:+.1%}" if sv["m_te"] is not None else "-"
@@ -516,6 +535,52 @@ with st.expander("△ 4원칙 — 이 매매법이 따르는 원리 (5년 검증
 **④ 모두가 아는 자리는 잘 안 온다 — 둥근 숫자는 거짓, '손절 자리'는 참**
 - BTC 80,000·ETH 2,500 같은 둥근 숫자도 다른 가격대와 똑같이 93~96% 도달함.
 - 진짜는 **모두가 손절을 걸어둔 직전 저점 아래를 쓸고 3봉 안에 되돌아오는 베어트랩** → 롱 (적중 58%, 앱과 합산 샤프 1.04 → 1.26). 반대(불트랩)는 안 통함. 설정에서 '베어트랩 추가'로 켬 (설정값을 바꾸면 약해지는 점은 주의).
+""")
+
+with st.expander("△ 코인별 독립 분석 — BTC × 테더 도미넌스 · ETH × TOTAL2·3 · 강도별 흐름 (11-05)", expanded=False):
+    if DOM:
+        import dominance_live as DL
+        st.caption(f"지금 ({DOM['date']}) · USDT.D {DOM['usdt_d']:.2f}% {DL.arrow(DOM['usdt_d_tr'])} · USDT 발행량 30일 {DOM['usdt_30']:+.1%} · BTC.D {DOM['btc_d']:.1f}% {DL.arrow(DOM['btc_d_tr'])} · ETH.D {DOM['eth_d']:.1f}%"
+                   f" · TOTAL3(스테이블 제외) {DL.arrow(DOM['t3_tr'])} 30일 {DOM['t3_30']:+.0%} · 알트 비중 {DL.arrow(DOM['alt_tr'])} · ETH/알트 {DL.arrow(DOM['eva_tr'])} (화살표 = 20·50·100일 방향)")
+    st.markdown("""
+**같은 규칙, 각자의 데이터** — BTC와 ETH는 각자 가격으로 신호·크기·전환 가격·흐름 정렬을 따로 계산합니다.
+- ETH 변동이 BTC의 1.33배 → 같은 금액이면 ETH 크기가 자동으로 작아짐. 일별 상관 0.71 (2016년 0.26 → 2026년 0.91로 점점 같이 움직임).
+- 같은 시각 앱 방향이 같았던 시간 74%, 반대 25%.
+- 코인마다 설정을 따로 골라 보니(18가지 중 앞 절반 1등) 뒤 절반에서 BTC 18위(0.62 vs 지금 0.95), ETH 13위(0.95 vs 1.11) → 따로 맞추면 과거에만 맞음. **규칙은 공유, 데이터는 독립**이 가장 좋았음.
+
+**BTC × 테더 도미넌스(USDT.D, 2020~)**
+- USDT.D 방향은 BTC 자기 추세와 79% 같음(상관 0.77) — BTC 가격이 분모에 들어 있어 거의 같은 정보.
+- 'USDT.D가 30일 오르면(공포) 다음 30일 BTC가 더 오름' 경향(t=3.0)은 앞 절반에만 있고 뒤 절반엔 없음. USDT 발행 속도는 관계없음.
+- 규칙 4가지(USDT.D 반대로 매매, 발행 속도로 매매, 어긋나면 ½ 두 가지) 모두 기각.
+
+**ETH × 알트 시장(TOTAL2·TOTAL3)**
+- TOTAL3 방향도 ETH 자기 추세와 79% 같음, 앞서거나 뒤서지 않음(같은 날 함께 움직임).
+- 규칙 7가지(TOTAL3·TOTAL2 추세대로, 어긋나면 ½, 알트 비중, ETH/알트 강약, 스테이블 제외) 모두 기각 — 가장 나은 'TOTAL2와 어긋나면 ½'도 +0.08로 기준 미달.
+- ETH는 최근 1년 앱 성적이 마이너스(샤프 −0.43, 코인베이스 기준)였고 알트 지표로 걸러도 나아지지 않음.
+
+**강도별 흐름 (7일 변화 ÷ 지난 1년 보통 크기 = σ, 5단계)**
+
+| 테더 도미 7일 | 시간 | 그 주 BTC / ETH | 다음 30일 BTC / ETH (오른 비율) | 다음 주 흔들림 |
+|---|---|---|---|---|
+| 강한 하락 (≤ −1.5σ) | 5% | +17% / +20% | +7.5% (68%) / +11.3% (63%) | 보통 |
+| 하락 | 22% | +8% / +11% | +4.0% / +6.0% | 보통 |
+| 보합 | 47% | +1% / +1% | +4.4% / +5.8% | 보통 |
+| 상승 | 20% | −6% / −8% | +4.5% / +3.3% | 보통 |
+| 강한 상승 (≥ +1.5σ) | 6% | −14% / −17% | −0.4% (47%) / −2.1% (39%) | **1.4배** |
+
+| TOTAL3 7일 (2021-05~) | 그 주 ETH / BTC | 다음 30일 ETH / BTC (오른 비율) |
+|---|---|---|
+| 강한 하락 | −18% / −13% | −3.7% (38%) / −0.3% (52%) |
+| 보합 | 0% / 0% | +2.5% / +2.2% |
+| 강한 상승 | +16% / +12% | +2.0% / +2.2% |
+
+- **같은 주**: 테더 도미와 코인은 거울처럼 반대, TOTAL3와 코인은 같은 방향. ETH가 BTC보다 1.15~1.4배 크게 움직임 (TOTAL3 1% → ETH 0.93% · BTC 0.67%).
+- **다음 주**: 강도 5단계 모두 평소와 차이 없음 → 예측 안 됨.
+- **다음 30일**: 센 주간의 방향이 조금 더 이어짐 (테더 도미 강한 하락 → 더 오름, 강한 상승 → 덜 오름, 알트 강한 하락 → 약함, 앞·뒤 절반 모두). 단 이것을 규칙(센 주간 뒤 30일 반대 포지션 ½)으로 만들면 BTC +0.01·ETH +0.05로 개선 없음 — 앱의 추세가 이미 같은 성질을 잡고 있음.
+- **관찰 중**: 'TOTAL3 강한 주간 뒤 30일 반대 ½'이 BTC에서 +0.25 (우연 범위 밖)였지만 최근 1년은 나빠졌고 원래 대상인 ETH에선 −0.07 → 채택 안 함.
+- **둘이 따로 놀 때**: 테더 도미만 오르고 TOTAL3는 버티는 주 → 다음 주 BTC −1.5%·ETH −2.2% (앞·뒤 절반 같은 방향), 단 겹치지 않는 표본 13주라 참고만.
+
+→ 두 지표는 **카드 아래 참고 줄**로만 표시 (매매·크기엔 안 씀).
 """)
 
 with st.expander("△ 거시 → 세부 → 경우의 수 (BTC 11년 · ETH 10년, 11-05)", expanded=False):
