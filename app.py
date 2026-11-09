@@ -32,6 +32,7 @@ with st.expander("△ 설정", expanded=False):
     mtf_on = st.checkbox("흐름 정렬 역가중 (기본) — 주봉·일봉·4시간이 모두 같으면 ½, 4시간이 둘 다 거스르면 1.5배 · 11년 확인: 최근 5년은 좋았고(샤프 0.63→0.96) 2015~2021엔 나빴음(2.31→2.02), 낙폭은 줄어듦", True, key="mtf_on")
     shape_on = st.checkbox("두 달 모양 반반 운용 (실험) — 4시간 방식 절반 + 일봉 60일 모양 절반을 한 수량으로 합침", False, key="shape_on")
     trap_on = st.checkbox("베어트랩 추가 (엄격 기준 통과 · 설정값 민감) — 직전 저점을 깼다가 3봉 안에 되돌아오면 24시간 롱 추가", False, key="trap_on")
+    flow_on = st.checkbox("돈의 흐름 주머니 (기본·권장) — 테더·코인베이스 프리미엄이 높으면 롱 쪽, 낮으면 숏 쪽으로 최대 변동성 목표의 ½ 추가 · 비트겟 2022-08~ 샤프 1.77→1.95", True, key="flow_on")
     wave_on = st.checkbox("파동 국면 크기 (기본·권장) — 중파동이 높은 저점(2파)·4파 확인 뒤 새로 시작하면 그 방향 1.5배·반대 ½ · 11년 샤프 1.89→2.04, 비트겟 5년 1.36→1.55", True, key="wave_on")
     mode = st.radio("매매 방식 (하나만 고르기 — 둘은 보는 기간이 달라 서로 다른 말을 할 수 있음)",
                     ["4시간 추세 — 롱·숏 모두 (기본·권장, 낙폭 작음)", "스윙 — 길게 먹기 (롱만, 최근 5년 성적 약함, 낙폭 큼)"], key="mode")
@@ -41,6 +42,7 @@ MTF = bool(mtf_on)
 SHAPE = bool(shape_on) and not SWING
 TRAP = bool(trap_on) and not SWING
 WAVE = bool(wave_on) and not SWING
+FLOW = bool(flow_on) and not SWING
 WP = False   # 횡보면 ½: 11년 확인(2015~2021 처음 보는 기간)에서 나빠져 옵션 삭제 (cosmos.py · macro.py)
 
 
@@ -65,6 +67,11 @@ def load(symbol: str):
         v["mtf"] = ML.state(df)
     except Exception:
         v["mtf"] = None
+    try:
+        import novel as N0
+        r0 = np.concatenate([[0.0], np.diff(np.log(df["close"].to_numpy(float)))]); v["cap"] = float(min(N0.TV / N0.sigma(r0)[-1], N0.LMAX))
+    except Exception:
+        v["cap"] = 0.0
     F = FN.frame(df)
     v.update({"atr": float(F["atr"][-1]), "res": float(F["res"][-1]), "sup": float(F["sup"][-1]), "trig": RL.triggers(df)})
     try:
@@ -316,6 +323,21 @@ try:
     DOM = load_dom()
 except Exception:
     DOM = None
+@st.cache_data(ttl=1800, show_spinner="돈의 흐름 읽는 중…")
+def load_flow():
+    import flow_live as FLv
+    return FLv.state()
+
+
+try:
+    FLW = load_flow()
+except Exception:
+    FLW = None
+if FLW:
+    import flow_live as FLv
+    _sc = np.mean([FLW[c]["score"] for c in ("BTC", "ETH")])
+    st.caption(f"돈의 흐름 {FLv.label(_sc)} · 테더 {FLW['usdt']:.4f} ({FLW['usdt_z']:+.1f}σ) · 코인베이스 프리미엄 BTC {FLW['BTC']['prem3']:+.2%} ({FLW['BTC']['prem_z']:+.1f}σ) · "
+               f"ETH {FLW['ETH']['prem3']:+.2%} ({FLW['ETH']['prem_z']:+.1f}σ)" + (" — 크기에 반영" if FLOW else " — 설정에서 꺼짐"))
 _fg = fear_greed()
 _top = []
 if any(MAC.values()):
@@ -370,7 +392,9 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
             sv = load_shape(sym)
         except Exception as e:
             st.warning(f"{nm} 일봉 모양 오류: {e} — 4시간 방식만 사용")
-    sp = 0.5 * sv["pos"] if sv else 0.0
+    sp0 = 0.5 * sv["pos"] if sv else 0.0
+    fl = (__import__("flow_live").W * FLW[nm]["s"] * v.get("cap", 0.0)) if (FLOW and FLW and nm in FLW) else 0.0   # 돈의 흐름 주머니
+    sp = sp0 + fl
     wt = 0.5 if sv else 1.0
     tr_ = v.get("trap") or {}
     tp = tr_.get("active", 0.0) * tr_.get("cap", 0.0) if TRAP else 0.0                 # 지금 베어트랩 몫
@@ -452,6 +476,9 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         if wv.get("active"):
             _txt += f" → {'롱' if wv['dir'] > 0 else '숏'} 1.5배 · {wv['stop']:,.0f} {'아래' if wv['dir'] > 0 else '위'}면 해제" if WAVE else " (설정에서 켜야 반영)"
         mood += ("<br>" if mood else "") + _txt
+    if FLOW and FLW and nm in FLW:
+        import flow_live as FLv
+        mood += ("<br>" if mood else "") + f"돈의 흐름 {FLv.label(FLW[nm]['score'])} ({FLW[nm]['score']:+.1f}σ) → {'롱' if fl > 0 else '숏'} 쪽 {abs(k * fl):,.0f} USDT 추가"
     if DOM:
         import dominance_live as DL
         mood += "<br>" if mood else ""
@@ -501,7 +528,7 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         side_s = "롱" if sv["side"] > 0 else "숏"; held = "롱" if sv["held_side"] > 0 else ("숏" if sv["held_side"] < 0 else "없음")
         mte = f"{sv['m_te']:+.1%}" if sv["m_te"] is not None else "-"
         st.caption(f"두 달 모양: 지금 모양은 '{side_s} 모양' (모양 {sv['cluster']}번 · 학습기간 다음 10일 평균 {sv['m_tr']:+.1%}, 확인기간 {mte}) · "
-                   f"모양 몫은 {sv['since']}부터 {held} 유지 중 (남은 {sv['days_left']}일, 10일 단위로만 바꿈) · 모양 몫 {k*sp:+,.0f} + 4시간 몫 {k*wt*v['pos']:+,.0f} = 합계 {notional:+,.0f} USDT (+롱 / −숏)")
+                   f"모양 몫은 {sv['since']}부터 {held} 유지 중 (남은 {sv['days_left']}일, 10일 단위로만 바꿈) · 모양 몫 {k*sp0:+,.0f} + 4시간 몫 {k*wt*v['pos']:+,.0f} = 합계 {notional:+,.0f} USDT (+롱 / −숏)")
         with st.expander(f"△ {nm} 두 달 모양 보기", expanded=False):
             fg = go.Figure()
             fg.add_trace(go.Scatter(y=sv["shape"], mode="lines", name="지금 60일 모양", line=dict(color="#1f4fbf", width=3)))
@@ -511,7 +538,7 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     st.plotly_chart(chart(df, v), width="stretch", key=f"ch_{sym}")
 
 try:
-    with open(STATE / ("certainty_wave.json" if (MTF and WAVE) else ("certainty_mtf.json" if MTF else "certainty.json")), encoding="utf-8") as _fh:
+    with open(STATE / ("certainty_flow.json" if (MTF and WAVE and FLOW) else ("certainty_wave.json" if (MTF and WAVE) else ("certainty_mtf.json" if MTF else "certainty.json"))), encoding="utf-8") as _fh:
         _cert = json.load(_fh)
     _tb = _cert["table"].get(f"{'maker' if MAKER else 'taker'}|{float(mult)}")
     if _tb:
@@ -521,11 +548,62 @@ try:
             st.dataframe(pd.DataFrame(_rows), hide_index=True, width="stretch")
             _a = _cert.get(f"asym|{'메이커' if MAKER else '테이커'}", {})
             if _a:
-                st.caption(f"5년 BTC·ETH 실제 손익을 30일 단위로 섞어 4천 번 다시 뽑은 결과(펀딩비 반영). 한 달은 동전 던지기에 가깝고 시간이 갈수록 확실해짐. "
+                st.caption(f"{'비트겟 ' + _cert['period'] + ' (돈의 흐름 자료가 있는 기간, 좋았던 시기라 낙관적일 수 있음)' if 'period' in _cert else '5년'} BTC·ETH 실제 손익을 30일 단위로 섞어 4천 번 다시 뽑은 결과(펀딩비 반영). 한 달은 동전 던지기에 가깝고 시간이 갈수록 확실해짐. "
                            f"방향 적중률은 약 50%지만 맞을 때 더 크게 먹어서 수익이 남 (이긴 달 {_a['mon_win']:.0%}, 평균 {_a['mon_avg_w']:+.1%} / 진 달 평균 {_a['mon_avg_l']:+.1%}). "
                            "한두 달 성적으로 방법을 바꾸지 마세요.")
 except Exception:
     pass
+
+with st.expander("△ 재분석 — 가격 모양 말고 '돈이 실제로 들어오나' (BTC·ETH, 11-09)", expanded=False):
+    st.markdown("""
+**왜 다시 봤나**: 지금까지의 분석(추세·호흡·파동·패턴·거시·지배력·우주 리듬·심리)은 모두 **같은 4시간 가격**에서 뽑은 값이었고, 결국 '추세 추종 하나'로 수렴함.
+그래서 이번엔 가격이 아닌 재료로 다시 봄 — 바이낸스 체결 기록(시장가 매수·매도), 선물 펀딩비·프리미엄·미결제약정·롱숏 비율(2021-12~), 코인베이스·테더 가격 차이, 옵션 내재 변동성(DVOL), 시각·요일, ETH/BTC 짝.
+판정도 바꿈: 규칙 샤프 대신 **정보계수(IC) = 값과 다음 1·3·7일 수익의 순위상관**, 시간만 어긋낸 우주 200번으로 우연 기준, 앞·뒤 절반과 BTC·ETH 모두 같은 부호인지.
+
+**① 무엇이 다음 1주(42봉)를 맞히나** (BTC·ETH 평균 IC, 0.05 넘으면 쓸 만한 수준)
+
+| 재료 | IC (1주) | 우연 p | 앞·뒤·두 코인 일관 | 성격 |
+|---|---|---|---|---|
+| **테더 프리미엄** (코인베이스 USDT−1) | **+0.139** | 0.00 | ○ | 코인 사려는 달러 수요 |
+| **코인베이스 프리미엄** (미국 현물 − 해외) | **+0.104** | 0.00 | ○ | 미국 현물 매수세 |
+| 선물/현물 거래량 비 (바이낸스) | +0.082 | 0.01 | ○ | 빚 낸 참여 (비트겟 자료로는 재현 안 됨) |
+| 전체 계정 롱숏 비율 (개미 쏠림) | −0.075 | 0.02 | ○ | 개미가 롱에 쏠리면 하락 (실시간 장기 자료 없음) |
+| 펀딩비 · 선물 프리미엄 · 미결제약정 · 고래 롱숏 · 옵션 DVOL | −0.05~+0.06 | 0.1~0.6 | 일부 | 약하거나 들쭉날쭉 |
+| 시장가 순매수 · 거래량 급증 · 체결 크기 | ±0.02 | | | 거의 없음 |
+| 시각·요일 (9년, 1시간 봉) | — | | 62개 중 1개만 | 없음 |
+| ETH/BTC 짝 매매 | 샤프 앞 2.09 → 뒤 0.23 | | ✕ | 최근 무너짐 |
+
+- 두 프리미엄은 **과거 수익을 빼도 IC가 그대로**(0.055~0.16) → 지금 앱(추세)과 다른 정보. 앱 수익과의 상관 0.3 수준.
+- 연도별로는 2019~2020·2022·2025에 약하거나 반대 → 늘 맞는 건 아님.
+
+**② 앱에 붙이기 — 주머니(따로 더함)가 기울이기(곱함)보다 나음**
+- 바이낸스 2022-06~ (흐름 4종): 1.58 → 1.89 · 고르는 절차까지 매 분기 '그때까지 자료'로 다시 한 걷기 검증: 1.58 → 1.63~1.73 (선택 편향을 뺀 현실값).
+- **실시간으로 구할 수 있는 재료만**(코인베이스·비트겟, 6시간 봉)으로, 앱이 쓰는 **비트겟 무기한 2022-08~**:
+
+| | 지금 앱 | + 돈의 흐름 주머니 ×0.5 |
+|---|---|---|
+| 샤프 (앞/뒤 · 3등분) | 1.77 (1.73/1.82 · 1.67/1.91/1.71) | **1.95** (2.02/1.89 · 1.81/2.04/2.01) |
+| BTC · ETH | 1.58 · 1.51 | 1.73 · 1.79 |
+| 지난 1년 | 1.02 | 1.71 |
+| 연 수익 · 최대 낙폭 | +36% · −11% | **+54%** · −16% |
+| 시간 어긋낸 우주 300번 | | p = 0.027 |
+
+- 주머니 ×0.25 · ×0.75는 엄격 판정 한 칸씩 미달(1.87 · 1.86) → 가운데 0.5.
+- 주머니 단독 연도별 샤프: 2022 −1.5 · 2023 +1.6 · 2024 +2.1 · 2025 −0.4 · 2026 +1.5.
+
+**③ 하루 기하 성장 (비트겟 2022-08~, 봉 안 반대쪽 끝 청산 반영)**
+
+| 배율 | 지금 앱 | + 돈의 흐름 |
+|---|---|---|
+| 1.5 | 0.12% (낙폭 −17%) | **0.17%** (−23%) |
+| 3 | 0.23% (−32%) | **0.31%** (−41%) |
+| 4 | 0.29% (−41%) | **0.39%** (−51%) |
+| 5 | 0.34% (−49%) | 0.45% (−60%) |
+| 8 | 0.43% (−69%) | 파산 |
+
+- 같은 낙폭에서 비교하면 하루 +0.03~0.05%p. 1%에는 여전히 못 미침(현실적 상한 0.3~0.4%).
+- 주의: 테더·코인베이스 자료가 2021-10부터라 검증 기간이 4.3년뿐, 그중 좋은 시기 비중이 큼.
+""")
 
 with st.expander("△ 엘리어트 파동 다시 세기 — 5파·3파 판별법 · ABC·플랫 경우의 수 (BTC·ETH 11년, 11-09)", expanded=False):
     st.markdown("""
@@ -599,7 +677,7 @@ with st.expander("△ 엘리어트 파동 다시 세기 — 5파·3파 판별법
 - 가장 좋았던 2016~2018: 배율 10에서 1.03% (−69%) — 1%는 그 시대에만 닿음. 지금 시대 샤프 1.4~1.8 < 필요 2.7.
 """)
 
-with st.expander("△ 하루 1% 기하 복리 — 배율별 성장 지도 (11-09 · 파동 국면 포함)", expanded=False):
+with st.expander("△ 하루 1% 기하 복리 — 배율별 성장 지도 (11-09 · 파동 국면·돈의 흐름 포함)", expanded=False):
     st.markdown("""
 **목표**: 수익일·손실일이 섞인 실제 결과를 복리로 쌓아 하루 평균 기하 성장 1% = 1년 37.8배.
 **조건**: 로그 성장의 최대치는 샤프²/2 → 연 샤프 **2.70 이상**(켈리 배율, 낙폭 매우 큼) 또는 3.11(켈리 ½)이 몇 년간 유지돼야 함.
@@ -616,6 +694,7 @@ with st.expander("△ 하루 1% 기하 복리 — 배율별 성장 지도 (11-09
 | 12 이상 | 2022~ 파산 (FTX 같은 4시간 급락 한 번) | | |
 
 - 지금 앱 기본(흐름 정렬 역가중 + 파동 국면 크기) 그대로, 비용·롱 펀딩·봉 안 최저가 청산까지 반영한 실제 복리 (BTC·ETH 코인베이스 4H).
+- 돈의 흐름 주머니를 더하면(비트겟 2022-08~): 배율 1.5 하루 0.12% → 0.17%, 배율 4 0.29% → 0.39% (낙폭 −41% → −51%) — '재분석' 펼침 참고.
 - 가장 좋았던 2016~2018년(샤프 3.14)은 배율 10에서 하루 1.03% (낙폭 −69%) — 1%에 닿은 유일한 시대.
 - 지금 시대 샤프 1.4~1.8 → 현실적 최대 하루 0.2~0.3% (1년 2~3배). 베어트랩을 더하면 +0.03~0.04%p.
 - 지난 1년 성적으로 배율을 정하는 방식(켈리 ½, 최대 10)도 2022~ 하루 0.12%, 최근 2년 0.21% (낙폭 −54%).
