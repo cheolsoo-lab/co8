@@ -178,8 +178,8 @@ def chart_swing(df, v):
     return fig
 
 
-def render_journal():
-    with st.expander("△ 매매 일지", expanded=False):
+def render_journal(box=None):
+    with (box or st).expander("△ 매매 일지", expanded=False):
         j = pd.read_csv(JOURNAL, encoding="utf-8") if JOURNAL.exists() else pd.DataFrame(columns=JCOLS)
         with st.form("jform", clear_on_submit=True):
             f1, f2, f3, f4 = st.columns(4)
@@ -256,9 +256,9 @@ def f53_txt(f, sym):
     return f"{nm} {w} 5파 시작점 {q(f['v0'])} 이탈({f['ago']}봉 전) → {o} 전환 · 11년: 뒤 7일 {o} 쪽 평균 6% (맞음 62%)"
 
 
-def render_diag(expanded=False):
+def render_diag(expanded=False, box=None):
     """접속 진단: 어느 시세 서버가 되는지, 어떤 버전으로 돌고 있는지."""
-    with st.expander("△ 접속 진단", expanded=expanded):
+    with (box or st).expander("△ 접속 진단", expanded=expanded):
         if st.button("지금 다시 검사", key="diag_btn"):
             st.cache_data.clear()
         import sys, platform, time as _t, requests as _rq
@@ -299,6 +299,8 @@ if errs:
 _alt = {COINS[s]: rows[s][1].get("src", "") for s in rows if not str(rows[s][1].get("src", "Bitget")).startswith("Bitget")}
 if _alt:
     st.caption("시세 대체 · " + " · ".join(f"{k} {v_.split(' (')[0]}" for k, v_ in _alt.items()) + " (비트겟 막힘)")
+tab_trade, tab_info = st.tabs(["△ 매매", "△ 근거·검증"])
+tab_info.markdown("**△ 참고 지표**")
 
 @st.cache_data(ttl=3600, show_spinner="일봉(거시) 읽는 중…")
 def load_macro(symbol: str):
@@ -336,7 +338,7 @@ except Exception:
 if FLW:
     import flow_live as FLv
     _sc = np.mean([FLW[c]["score"] for c in ("BTC", "ETH")])
-    st.caption(f"돈의 흐름 {FLv.label(_sc)} · 테더 {FLW['usdt']:.4f} ({FLW['usdt_z']:+.1f}σ) · 코인베이스 프리미엄 BTC {FLW['BTC']['prem3']:+.2%} ({FLW['BTC']['prem_z']:+.1f}σ) · "
+    tab_info.caption(f"돈의 흐름 {FLv.label(_sc)} · 테더 {FLW['usdt']:.4f} ({FLW['usdt_z']:+.1f}σ) · 코인베이스 프리미엄 BTC {FLW['BTC']['prem3']:+.2%} ({FLW['BTC']['prem_z']:+.1f}σ) · "
                f"ETH {FLW['ETH']['prem3']:+.2%} ({FLW['ETH']['prem_z']:+.1f}σ)" + (" — 크기에 반영" if FLOW else " — 설정에서 꺼짐"))
 _fg = fear_greed()
 _top = []
@@ -346,10 +348,16 @@ if _fg:
     _kr = {"Extreme Fear": "극단 공포", "Fear": "공포", "Neutral": "중립", "Greed": "탐욕", "Extreme Greed": "극단 탐욕"}.get(_fg[1], _fg[1])
     _top.append(f"공포·탐욕 {_fg[0]} {_kr}")
 if _top:
-    st.caption(" │ ".join(_top) + " — 참고 (매매엔 안 씀)")
+    tab_info.caption(" │ ".join(_top) + " — 참고 (매매엔 안 씀)")
 # 배지 색: (배경, 테두리, 왼쪽 강조선·글자색, 표시) — 은은한 바탕 + 진한 글자
 BADGE = {"롱": ("#f0f8f3", "#d3eadb", "#1f7a45", "롱 ▲"), "숏": ("#fcf2f2", "#f1d4d4", "#b23b3b", "숏 ▼"), "관망": ("#f5f6f8", "#e3e6ea", "#5b6270", "관망 ―")}
-badge_cols = st.columns(len(COINS))
+badge_cols = tab_trade.columns(len(COINS))
+exp_box = tab_trade.container(); detail_box = tab_trade.container()
+try:
+    with open(STATE / "flow_cases.json", encoding="utf-8") as _fh:
+        CASES = json.load(_fh)["pool"]
+except Exception:
+    CASES = {}
 
 
 try:
@@ -364,16 +372,24 @@ except Exception:
     TOPDOWN = {}
 
 
-def badge(nm, price, word, strength, qty_line, change, flow, next_t, mood=""):
+def chip(t, tone=0):
+    col = {1: ("#1f7a45", "#e3f2e8"), -1: ("#b23b3b", "#f8e3e3"), 0: ("#4b5563", "#eef0f3")}[int(np.sign(tone))]
+    return f'<span style="display:inline-block;margin:3px 4px 0 0;padding:1px 8px;border-radius:10px;background:{col[1]};color:{col[0]};font-size:0.78rem;white-space:nowrap">{t}</span>'
+
+
+def badge(nm, price, word, strength, qty_line, change, flow, next_t, chips="", case="", entry=""):
     bg, bd, ac, label = BADGE[word]
-    chg = (f'<div style="margin-top:8px;background:#fff8dc;border:1px solid #f0e2a8;color:#6b5400;border-radius:6px;padding:3px 8px;font-size:0.82rem;font-weight:600">{change}</div>' if change else "")
+    chg = (f'<div style="margin-top:8px;background:#fff8dc;border:1px solid #f0e2a8;color:#6b5400;border-radius:6px;padding:3px 8px;font-size:0.84rem;font-weight:600">{change}</div>' if change
+           else '<div style="margin-top:6px;font-size:0.8rem;color:#6b7280">지금 할 일 · 이번 마감엔 바뀐 것 없음 → 내 포지션이 위와 같으면 그대로</div>')
     return (f'<div style="border-radius:12px;padding:12px 14px 10px 14px;margin-bottom:12px;background:{bg};border:1px solid {bd};border-left:5px solid {ac};color:#374151;line-height:1.45">'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
-            f'<span style="font-size:1.45rem;font-weight:700;color:{ac}">{label}<span style="font-size:0.85rem;font-weight:500;color:#6b7280"> {strength}</span></span>'
-            f'<span style="font-size:0.85rem;color:#6b7280">{nm} · {price}</span></div>'
-            f'<div style="font-size:0.95rem;font-weight:600;color:#1f2937">{qty_line}</div>{chg}'
-            f'<div style="margin-top:6px;font-size:0.82rem;color:#4b5563">{flow}</div>'
-            + (f'<div style="margin-top:6px;padding-top:6px;border-top:1px dashed {bd};font-size:0.78rem;color:#6b7280">{mood}</div>' if mood else "") +
+            f'<span style="font-size:1.5rem;font-weight:700;color:{ac}">{label}<span style="font-size:0.85rem;font-weight:500;color:#6b7280"> {strength}</span></span>'
+            f'<span style="font-size:0.9rem;color:#374151;font-weight:600">{nm} {price}</span></div>'
+            f'<div style="font-size:1.0rem;font-weight:600;color:#1f2937">{qty_line}</div>'
+            + (f'<div style="font-size:0.8rem;color:#6b7280">{entry}</div>' if entry else "") + chg +
+            f'<div style="margin-top:7px;font-size:0.86rem;color:#1f2937">{flow}</div>'
+            + (f'<div style="margin-top:7px;padding-top:6px;border-top:1px dashed {bd}">{chips}</div>' if chips else "")
+            + (f'<div style="margin-top:5px;font-size:0.8rem;color:#374151">{case}</div>' if case else "") +
             f'<div style="margin-top:4px;font-size:0.75rem;color:#9ca3af">다음 판단 {next_t:%H:%M} 마감</div></div>')
 
 
@@ -416,16 +432,14 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     side = ("숏" if q_now < 0 else "롱") if has else ""
     close_t = (pd.Timestamp(v["time"]) + pd.Timedelta(hours=4)).tz_convert("Asia/Seoul")
     next_t = close_t + pd.Timedelta(hours=4)
-    st.subheader(f"△ {nm}  ${last:,.1f}")
-    a, b, c_ = st.columns(3)
-    a.metric("지금 들고 있을 포지션", f"{side} {abs(q_now):.{dq}f} {nm}" if has else "없음 (관망)",
-             (f"약 {abs(q_now)*last:,.0f} USDT (목표 {abs(notional):,.0f}) · {LEV_SET}배 격리 증거금 {abs(q_now)*last/LEV_SET:,.0f}") if has else
-             (f"목표 {abs(notional):.0f} USDT → 최소 단위 {stp} {nm}(약 {stp*last:,.0f} USDT) 미만" if abs(notional) > 0.5 else f"점수 {v['dir']:+.2f}"), delta_color="off")
+    pf = 2 if sym == "ETHUSDT" else 1
+    entry = ""
     if has and px:
         ent = px[2] if q_now < 0 else px[1]
-        b.metric("진입 가격 (지금)", f"{ent:,.{2 if sym == 'ETHUSDT' else 1}f}", f"{'매도1호가' if q_now < 0 else '매수1호가'}에 지정가" if MAKER else "시장가", delta_color="off")
-    else:
-        b.metric("진입 가격 (지금)", "-", "포지션 없음", delta_color="off")
+        entry = (f"진입·조정은 {'매도1호가' if q_now < 0 else '매수1호가'} {ent:,.{pf}f} 지정가" if MAKER else f"진입·조정은 시장가 (지금 {last:,.{pf}f})") + f" · {LEV_SET}배 격리 증거금 약 {abs(q_now)*last/LEV_SET:,.0f} USDT"
+    elif abs(notional) > 0.5:
+        entry = f"목표 {abs(notional):.0f} USDT가 최소 단위 {stp} {nm}(약 {stp*last:,.0f} USDT)보다 작아 관망"
+    tab_info.markdown(f"**△ {nm} 참고**")
     # 다음 마감 기준 가장 가까운 '할 일이 생기는' 가격 (위·아래)
     T = CL.split_rows(v["trig"], ers) if ers else v["trig"]
     if WAVE: T = WL.split_rows(T, v.get("wave"))
@@ -445,8 +459,11 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         strength = "(강)" if "(강)" in vd else "(약)"
         if not vd.startswith(side): strength = "(신호 약해짐 · 유지)"
     q_prev = qty(k * (wt * v["pos_prev"] * fx(v["pos_prev"]) * CL.factor(v.get("er_prev") if WP else None) * (WL.factor(v.get("wave_prev"), float(np.sign(v["pos_prev"]))) if WAVE else 1.0) + sp + tp), last, stp)
-    change = (f"방금 바뀜 ({close_t:%H:%M} 마감): {desc(q_prev, nm, dq)} → {desc(q_now, nm, dq)}" if q_prev != q_now else "")
+    change = (f"지금 할 일 · {close_t:%H:%M} 마감에 바뀜: {desc(q_prev, nm, dq)} → {desc(q_now, nm, dq)}" if q_prev != q_now else "")
     qline = (f"{abs(q_now):.{dq}f} {nm} · 약 {abs(q_now)*last:,.0f} USDT" if has else "포지션 없음")
+    arw = lambda x: "▲" if x > 0 else ("▼" if x < 0 else "―")
+    _vd = RL.verdict(v["dir"]); _st = "강" if "(강)" in _vd else ("약" if "(약)" in _vd else "중립")
+    chips = chip(f"추세 {arw(v['dir']) if _st != '중립' else '―'} {_st}", v["dir"] if _st != "중립" else 0)
     flow = "<br>".join(lines) if lines else "다음 마감까지 어느 가격이든 유지"
     mood = ""
     if v.get("fake_streak") is not None:
@@ -456,10 +473,9 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         mood += f"가짜 전환 연속 {v['fake_streak']}번" + (f" (최장 {mx})" if mx else "")
         if change: mood += " · 새 방향 4번 중 3번은 가짜"
     if v.get("mtf"):
-        arw = lambda x: "▲" if x > 0 else ("▼" if x < 0 else "―")
         f_, ag_ = ML.factor(float(np.sign(v["pos"])), v["mtf"])
         tag = {2: "크기 ½", 1: "크기 그대로", 0: "크기 1.5배"}.get(ag_, "")
-        mood = f"주 {arw(v['mtf']['dW'])} 일 {arw(v['mtf']['dD'])} 4H {arw(v['pos'])}" + (f" · {tag}" if (tag and MTF) else "") + ("<br>" + mood if mood else "")
+        chips += chip(f"주{arw(v['mtf']['dW'])} 일{arw(v['mtf']['dD'])} 4H{arw(v['pos'])}" + (f" · {tag}" if (tag and MTF) else ""), 0)
         wsg = float(np.sign(v["mtf"]["dW"]))
         if wsg != 0:
             import topdown as TD
@@ -476,9 +492,20 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         if wv.get("active"):
             _txt += f" → {'롱' if wv['dir'] > 0 else '숏'} 1.5배 · {wv['stop']:,.0f} {'아래' if wv['dir'] > 0 else '위'}면 해제" if WAVE else " (설정에서 켜야 반영)"
         mood += ("<br>" if mood else "") + _txt
-    if FLOW and FLW and nm in FLW:
+        chips += chip(f"파동 {_lab}" + (f" → {'롱' if wv['dir'] > 0 else '숏'} 1.5배" if (wv.get("active") and WAVE) else ""), wv["dir"] if wv.get("active") else 0)
+    case = ""
+    if FLW and nm in FLW:
         import flow_live as FLv
-        mood += ("<br>" if mood else "") + f"돈의 흐름 {FLv.label(FLW[nm]['score'])} ({FLW[nm]['score']:+.1f}σ) → {'롱' if fl > 0 else '숏'} 쪽 {abs(k * fl):,.0f} USDT 추가"
+        _sc = FLW[nm]["score"]
+        chips += chip(f"돈의 흐름 {FLv.label(_sc)} {_sc:+.1f}σ" + (f" → {'롱' if fl > 0 else '숏'} 쪽 +{abs(k * fl):,.0f}" if (FLOW and abs(k * fl) >= 0.5) else ""), _sc if abs(_sc) >= 0.5 else 0)
+        if has and CASES:
+            _ag = float(np.sign(q_now)) * _sc
+            _key = "흐름 강하게 같은 쪽 (≥1σ)" if _ag >= 1 else ("흐름 약하게 같은 쪽" if _ag > 0 else ("흐름 약하게 반대" if _ag > -1 else "흐름 강하게 반대 (≤−1σ)"))
+            _c = CASES.get(_key)
+            if _c:
+                _good = _c["mean"] > 0.005; _bad = _c["mean"] < -0.005
+                case = (f"<b>지금 경우</b> · {side} + {_key.split(' (')[0]} → 과거 7일 이 포지션 평균 "
+                        f"<span style='color:{'#1f7a45' if _good else ('#b23b3b' if _bad else '#4b5563')};font-weight:600'>{_c['mean']:+.1%}</span> · 맞음 {_c['hit']:.0%} <span style='color:#9ca3af'>(2022-08~, 시간의 {_c['share']:.0%})</span>")
     if DOM:
         import dominance_live as DL
         mood += "<br>" if mood else ""
@@ -489,9 +516,9 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
             mood += (f"TOTAL3 7일 {DL.label(DOM['t3_z7'])}({DOM['t3_z7']:+.1f}σ) · 30일 {DL.label(DOM['t3_z30'])}({DOM['t3_z30']:+.1f}σ) · 알트 비중 {DL.arrow(DOM['alt_tr'])}"
                      if "t3_z7" in DOM else f"TOTAL3 {DL.arrow(DOM['t3_tr'])} · 알트 비중 {DL.arrow(DOM['alt_tr'])}")
     with badge_cols[i_c]:
-        st.markdown(badge(nm, f"${last:,.{2 if sym == 'ETHUSDT' else 1}f}", word, strength, qline, change, flow, next_t, mood), unsafe_allow_html=True)
-    c_.metric(f"전환 가격 ({next_t:%H:%M} 마감 기준)", lines[0].split(" → ")[0] if lines else "변화 없음",
-              " / ".join(l.split(" → ")[1] for l in lines[:1]) if lines else "어느 가격에 마감해도 유지", delta_color="off")
+        st.markdown(badge(nm, f"${last:,.{pf}f}", word, strength, qline, change, flow, next_t, chips, case, entry), unsafe_allow_html=True)
+    if mood:
+        tab_info.markdown(f'<div style="font-size:0.85rem;color:#4b5563;line-height:1.5">{mood}</div>', unsafe_allow_html=True)
     tb = []; seg = []
     for r in reversed(T):                                   # 위 가격대 → 아래, 같은 결과가 이어지면 한 줄로
         tgt = qty(k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) * wvr(r) + sp + tp_next), last, stp)
@@ -503,19 +530,20 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         rng = "어느 가격이든" if not (lo or hi) else (f"{lo} 위" if not hi else (f"{hi} 아래" if not lo else f"{lo} ~ {hi}")); here = lo_ <= last < hi_
         tb.append({"다음 4H 마감가": rng + ("  ← 지금" if here else ""), "그때 포지션": (f"{'숏' if tgt < 0 else '롱'} {abs(tgt):.{dq}f} {nm} (약 {abs(tgt)*last:,.0f} USDT)" if tgt else "없음"),
                    "할 일": act})
-    st.dataframe(pd.DataFrame(tb), hide_index=True, width="stretch")
+    _det = detail_box.expander(f"△ {nm} 전환 가격표 · 차트 ({next_t:%H:%M} 마감 기준)", expanded=False)
+    _det.dataframe(pd.DataFrame(tb), hide_index=True, width="stretch")
     sr = []
     if np.isfinite(v["res"]): sr.append(f"저항 {v['res']:,.1f}")
     if np.isfinite(v["sup"]): sr.append(f"지지 {v['sup']:,.1f}")
-    st.caption(f"{RL.verdict(v['dir'])} · 점수 {v['dir']:+.2f} (추세 {v['tsmom']:+.2f} / 호흡 {v['breath']:+.2f}) · " + " · ".join(sr)
+    tab_info.caption(f"{RL.verdict(v['dir'])} · 점수 {v['dir']:+.2f} (추세 {v['tsmom']:+.2f} / 호흡 {v['breath']:+.2f}) · " + " · ".join(sr)
                + f" · {close_t:%m-%d %H:%M} 마감 기준" + (" · 지정가(30분 미체결 시 시장가)" if MAKER else ""))
     if v.get("er"):
         e_ = v["er"]
-        st.caption(f"결 · {e_['mode']} (효율비 {e_['er']:.2f}) — " + ("수익이 나는 구간" if e_["mode"] == "직진" else "본전 구간, 그대로 따르기"))
+        tab_info.caption(f"결 · {e_['mode']} (효율비 {e_['er']:.2f}) — " + ("수익이 나는 구간" if e_["mode"] == "직진" else "본전 구간, 그대로 따르기"))
     if v.get("regime"):
-        st.caption(f"상황 · {v['regime']} — 방법은 고정, 크기만 변동성에 맞춤")
+        tab_info.caption(f"상황 · {v['regime']} — 방법은 고정, 크기만 변동성에 맞춤")
     if v.get("f53"):
-        st.caption("5파·3파 판별 · " + " │ ".join(f53_txt(f, sym) for f in v["f53"]) + " — 참고 (크기엔 안 씀)")
+        tab_info.caption("5파·3파 판별 · " + " │ ".join(f53_txt(f, sym) for f in v["f53"]) + " — 참고 (크기엔 안 씀)")
     if tr_:
         if tr_.get("active", 0) > 0:
             ttxt = f"발생 ({pd.Timestamp(tr_['last_event']).tz_convert('Asia/Seoul'):%m-%d %H:%M} 마감) → 롱 유지 남은 {tr_['active_left']}봉"
@@ -523,26 +551,29 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
             ttxt = f"대기 — {tr_['armed_level']:,.1f} 위로 {tr_['armed_left']}봉 안에 마감하면 롱" + (f" (+{k*tr_['cap']:,.0f} USDT)" if TRAP else "")
         else:
             ttxt = f"없음 · 감시 저점 {tr_['last_low']:,.1f}" if tr_.get("last_low") else "없음"
-        st.caption(f"베어트랩 · {ttxt}" + ("" if TRAP else " (설정에서 켜야 반영)"))
+        tab_info.caption(f"베어트랩 · {ttxt}" + ("" if TRAP else " (설정에서 켜야 반영)"))
     if sv:
         side_s = "롱" if sv["side"] > 0 else "숏"; held = "롱" if sv["held_side"] > 0 else ("숏" if sv["held_side"] < 0 else "없음")
         mte = f"{sv['m_te']:+.1%}" if sv["m_te"] is not None else "-"
-        st.caption(f"두 달 모양: 지금 모양은 '{side_s} 모양' (모양 {sv['cluster']}번 · 학습기간 다음 10일 평균 {sv['m_tr']:+.1%}, 확인기간 {mte}) · "
+        tab_info.caption(f"두 달 모양: 지금 모양은 '{side_s} 모양' (모양 {sv['cluster']}번 · 학습기간 다음 10일 평균 {sv['m_tr']:+.1%}, 확인기간 {mte}) · "
                    f"모양 몫은 {sv['since']}부터 {held} 유지 중 (남은 {sv['days_left']}일, 10일 단위로만 바꿈) · 모양 몫 {k*sp0:+,.0f} + 4시간 몫 {k*wt*v['pos']:+,.0f} = 합계 {notional:+,.0f} USDT (+롱 / −숏)")
-        with st.expander(f"△ {nm} 두 달 모양 보기", expanded=False):
+        with tab_info.expander(f"△ {nm} 두 달 모양 보기", expanded=False):
             fg = go.Figure()
             fg.add_trace(go.Scatter(y=sv["shape"], mode="lines", name="지금 60일 모양", line=dict(color="#1f4fbf", width=3)))
             fg.add_trace(go.Scatter(y=sv["centroid"], mode="lines", name=f"모양 {sv['cluster']}번 대표 모양", line=dict(color="#9a9a9a", width=2, dash="dot")))
             fg.update_layout(height=240, margin=dict(l=5, r=5, t=10, b=5), xaxis=dict(showticklabels=False), yaxis=dict(showticklabels=False), legend=dict(orientation="h"))
             st.plotly_chart(fg, width="stretch", key=f"shp_{sym}")
-    st.plotly_chart(chart(df, v), width="stretch", key=f"ch_{sym}")
+    _det.plotly_chart(chart(df, v), width="stretch", key=f"ch_{sym}")
 
 try:
     with open(STATE / ("certainty_flow.json" if (MTF and WAVE and FLOW) else ("certainty_wave.json" if (MTF and WAVE) else ("certainty_mtf.json" if MTF else "certainty.json"))), encoding="utf-8") as _fh:
         _cert = json.load(_fh)
     _tb = _cert["table"].get(f"{'maker' if MAKER else 'taker'}|{float(mult)}")
     if _tb:
-        with st.expander(f"△ 확실성 — 지금 설정(배율 {mult}, {'지정가' if MAKER else '시장가'})으로 하면", expanded=True):
+        _y, _y3 = _tb["1년"], _tb["3년"]
+        exp_box.caption(f"이 설정(배율 {mult}, {'지정가' if MAKER else '시장가'})의 지난 성적을 섞어 본 기대: 1년 수익 날 확률 {_y['p']:.0%} · 중앙 {_y['med']:+.0%} · 나쁜 10% {_y['p10']:+.0%}"
+                        f" · 3년 안에 −30% 낙폭 겪을 확률 {_y3['dd30']:.0%}" + (f" ({_cert['period'][:7]}~ 기준, 좋았던 시기라 낙관적일 수 있음)" if 'period' in _cert else "") + " — 한 달은 동전 던지기, 신호를 건너뛰지 말 것")
+        with tab_info.expander(f"△ 확실성 — 지금 설정(배율 {mult}, {'지정가' if MAKER else '시장가'})으로 하면", expanded=False):
             _rows = [{"기간": k, "수익 날 확률": f"{v['p']:.0%}", "중앙값": f"{v['med']:+.0%}", "나쁜 10%": f"{v['p10']:+.0%}", "좋은 10%": f"{v['p90']:+.0%}",
                       "중간에 −30% 낙폭 겪을 확률": f"{v['dd30']:.0%}"} for k, v in _tb.items()]
             st.dataframe(pd.DataFrame(_rows), hide_index=True, width="stretch")
@@ -554,7 +585,7 @@ try:
 except Exception:
     pass
 
-with st.expander("△ 재분석 — 가격 모양 말고 '돈이 실제로 들어오나' (BTC·ETH, 11-09)", expanded=False):
+with tab_info.expander("△ 재분석 — 가격 모양 말고 '돈이 실제로 들어오나' (BTC·ETH, 11-09)", expanded=False):
     st.markdown("""
 **왜 다시 봤나**: 지금까지의 분석(추세·호흡·파동·패턴·거시·지배력·우주 리듬·심리)은 모두 **같은 4시간 가격**에서 뽑은 값이었고, 결국 '추세 추종 하나'로 수렴함.
 그래서 이번엔 가격이 아닌 재료로 다시 봄 — 바이낸스 체결 기록(시장가 매수·매도), 선물 펀딩비·프리미엄·미결제약정·롱숏 비율(2021-12~), 코인베이스·테더 가격 차이, 옵션 내재 변동성(DVOL), 시각·요일, ETH/BTC 짝.
@@ -603,9 +634,26 @@ with st.expander("△ 재분석 — 가격 모양 말고 '돈이 실제로 들�
 
 - 같은 낙폭에서 비교하면 하루 +0.03~0.05%p. 1%에는 여전히 못 미침(현실적 상한 0.3~0.4%).
 - 주의: 테더·코인베이스 자료가 2021-10부터라 검증 기간이 4.3년뿐, 그중 좋은 시기 비중이 큼.
+
+**④ 경우의 수 재검토 (2차, 11-09 오후) — 더 나은 길이 있나**
+
+| 시험한 것 | 결과 |
+|---|---|
+| 김치 프리미엄 (업비트 ÷ 코인베이스×환율, 2017~) | IC +0.02 (우연 p 0.4~0.7) — 정보 없음 |
+| 스테이블코인 발행 증가 7·30일 (2017~) | IC +0.04 (p 0.3~0.4) — 약함 |
+| 미결제약정 × 가격 4분면 (새 돈 / 청산) | BTC·ETH가 서로 다른 방향 — 기각 |
+| 앱이 방향을 바꿀 때 흐름이 같은 쪽이면 믿기 | 전환 뒤 구간 손익 차이 없음 — 기각 |
+| 흐름 쓰는 법 10가지 (강한 반대면 앱 0·½, 같은 쪽 1.5배, tanh, 계단, 기울이기, 1일 프리미엄, 7일 변화 섞기) | 바이낸스 2018-06~2022-07에서 고르고 비트겟 2022-08~에서 확인 → **지금 기본(주머니 0.5)을 이긴 것 없음** |
+| CME 주말 갭 메우기 | 5일 안에 60~64% 메워지지만 메우는 쪽으로 걸면 손실(BTC 72시간 −0.26%) — 변동성 때문이지 돈이 되는 패턴 아님 |
+| 옵션 만기(매달 마지막 금요일) 전후 | 만기 뒤 1주 +1.1~2.0% vs 평소 +0.4~0.6%, 표준오차 범위 안 — 참고만 |
+| 변동성 예측으로 크기 (HAR · 느린 σ · DVOL 섞기) | DVOL 반반이 +0.07, 나머지 나빠짐 — 기각 |
+| 펀딩비 받기 (현물 롱 + 무기한 숏) | 2020~21 연 17~38% → 2025~26 연 2~5% — 지금은 할 가치 낮음 |
+
+- **조심할 점**: 테더 자료가 없던 2018-06~2022-07에 코인베이스 프리미엄만으로 주머니를 붙이면 앱이 1.73 → 1.62로 오히려 나빠짐. 지금의 효과는 대부분 **테더 프리미엄**과 2022년 이후(현물 ETF·기관 시대)에서 나옴 → 시대가 바뀌면 약해질 수 있음.
+- **실전용 경우의 수** (비트겟 2022-08~, 앱 포지션 × 돈의 흐름 → 다음 7일 그 포지션 손익): 강하게 같은 쪽(시간의 18%) **+2.5% · 맞음 59%** / 약하게 같은 쪽 +0.2% · 48% / 약하게 반대 −0.1% · 45% / 강하게 반대(6%) **−2.0% · 37%**. 카드의 '지금 경우' 줄이 이 표.
 """)
 
-with st.expander("△ 엘리어트 파동 다시 세기 — 5파·3파 판별법 · ABC·플랫 경우의 수 (BTC·ETH 11년, 11-09)", expanded=False):
+with tab_info.expander("△ 엘리어트 파동 다시 세기 — 5파·3파 판별법 · ABC·플랫 경우의 수 (BTC·ETH 11년, 11-09)", expanded=False):
     st.markdown("""
 **바로잡기**: 지난번 '5파는 약하다와 반대'는 **같은 방향 꼭짓점이 다섯 번 이상 이어진 것**을 센 값이라 엘리어트 5파가 아니었음. 이번엔 규칙(2파는 시작점 안 깸 · 3파가 가장 짧지 않음 · 4파는 1파와 안 겹침)을 통과한 충격파만 5파로 셈.
 파동 크기 = 변동성 단위 (4시간 ATR의 2배 소 · 4배 중 · 8배 대).
@@ -677,7 +725,7 @@ with st.expander("△ 엘리어트 파동 다시 세기 — 5파·3파 판별법
 - 가장 좋았던 2016~2018: 배율 10에서 1.03% (−69%) — 1%는 그 시대에만 닿음. 지금 시대 샤프 1.4~1.8 < 필요 2.7.
 """)
 
-with st.expander("△ 하루 1% 기하 복리 — 배율별 성장 지도 (11-09 · 파동 국면·돈의 흐름 포함)", expanded=False):
+with tab_info.expander("△ 하루 1% 기하 복리 — 배율별 성장 지도 (11-09 · 파동 국면·돈의 흐름 포함)", expanded=False):
     st.markdown("""
 **목표**: 수익일·손실일이 섞인 실제 결과를 복리로 쌓아 하루 평균 기하 성장 1% = 1년 37.8배.
 **조건**: 로그 성장의 최대치는 샤프²/2 → 연 샤프 **2.70 이상**(켈리 배율, 낙폭 매우 큼) 또는 3.11(켈리 ½)이 몇 년간 유지돼야 함.
@@ -702,7 +750,7 @@ with st.expander("△ 하루 1% 기하 복리 — 배율별 성장 지도 (11-09
 - 표의 배율은 지나고 나서 본 값 — 앞으로도 같다는 보장 없음. 4~5는 자본이 절반까지 줄어드는 구간을 견딜 수 있을 때만.
 """)
 
-with st.expander("△ 4원칙 — 이 매매법이 따르는 원리 (5년 검증)", expanded=False):
+with tab_info.expander("△ 4원칙 — 이 매매법이 따르는 원리 (5년 검증)", expanded=False):
     st.markdown("""
 **① 손실은 짧게, 이익은 길게 — 참. 이 방식의 본질**
 - 거래 900개 중 이긴 건 26%뿐. 하지만 평균 이익 +2.5%(8.6일 보유) vs 평균 손실 −0.6%(2.4일) → 손익비 4.4.
@@ -751,7 +799,7 @@ with st.expander("△ 4원칙 — 이 매매법이 따르는 원리 (5년 검증
 - 진짜는 **모두가 손절을 걸어둔 직전 저점 아래를 쓸고 3봉 안에 되돌아오는 베어트랩** → 롱 (적중 58%, 앱과 합산 샤프 1.04 → 1.26). 반대(불트랩)는 안 통함. 설정에서 '베어트랩 추가'로 켬 (설정값을 바꾸면 약해지는 점은 주의).
 """)
 
-with st.expander("△ 코인별 독립 분석 — BTC × 테더 도미넌스 · ETH × TOTAL2·3 · 강도별 흐름 (11-05)", expanded=False):
+with tab_info.expander("△ 코인별 독립 분석 — BTC × 테더 도미넌스 · ETH × TOTAL2·3 · 강도별 흐름 (11-05)", expanded=False):
     if DOM:
         import dominance_live as DL
         st.caption(f"지금 ({DOM['date']}) · USDT.D {DOM['usdt_d']:.2f}% {DL.arrow(DOM['usdt_d_tr'])} · USDT 발행량 30일 {DOM['usdt_30']:+.1%} · BTC.D {DOM['btc_d']:.1f}% {DL.arrow(DOM['btc_d_tr'])} · ETH.D {DOM['eth_d']:.1f}%"
@@ -797,7 +845,7 @@ with st.expander("△ 코인별 독립 분석 — BTC × 테더 도미넌스 · 
 → 두 지표는 **카드 아래 참고 줄**로만 표시 (매매·크기엔 안 씀).
 """)
 
-with st.expander("△ 거시 → 세부 → 경우의 수 (BTC 11년 · ETH 10년, 11-05)", expanded=False):
+with tab_info.expander("△ 거시 → 세부 → 경우의 수 (BTC 11년 · ETH 10년, 11-05)", expanded=False):
     for _n, _m in MAC.items():
         if _m:
             arw = lambda x: "▲" if x > 0 else ("▼" if x < 0 else "―")
@@ -835,7 +883,7 @@ with st.expander("△ 거시 → 세부 → 경우의 수 (BTC 11년 · ETH 10�
 - 지난번 채택한 흐름 정렬 역가중은 처음 보는 2015~2021년에서 2.31 → 2.02로 오히려 나빴고, 최근 5년에서만 0.63 → 0.96으로 좋았음. 11년 전체 샤프는 비슷(1.95 vs 1.89), 최대 낙폭은 −21% → −14%로 줄어듦 → 기본으로 두되 '수익 개선'은 확실하지 않음.
 """)
 
-with st.expander("△ 우주·물리 렌즈 17개 — 평행우주 검증 (11-05)", expanded=False):
+with tab_info.expander("△ 우주·물리 렌즈 17개 — 평행우주 검증 (11-05)", expanded=False):
     try:
         import cosmos_live as CL
         _ph, _pn = CL.moon(); st.caption(f"오늘 · 달 {_pn} (위상 {_ph:.2f}) · 2024-04-20 반감기 뒤 {CL.halving_days()}일 — 둘 다 판단에 쓰지 않음 (아래 ⑤·⑦)")
@@ -869,7 +917,7 @@ with st.expander("△ 우주·물리 렌즈 17개 — 평행우주 검증 (11-05
 - **반감기**: 세 번 모두 반감기 뒤 525~546일에 고점, 이후 약 1년 −53~−84%. 지금 929일째. 표본 3개 → 통계 검증 불가, 참고만.
 """)
 
-with st.expander("△ 규칙 (한 번 읽어두기)", expanded=False):
+with tab_info.expander("△ 규칙 (한 번 읽어두기)", expanded=False):
     st.markdown("""
 - **방향**: 추세(7·14·30·60·90일 수익 방향 평균) 50% + 호흡(같은 방향 4H 봉이 3~6개 이어지면 따라가기) 50%. 점수 ±0.15 안이면 관망.
 - **크기**: 변동성이 크면 작게, 작으면 크게(코인 연변동성 40% 기준) × 배율. 표시된 금액이 '지금 들고 있어야 할 포지션'.
@@ -886,7 +934,7 @@ with st.expander("△ 규칙 (한 번 읽어두기)", expanded=False):
 - **추가로 기각한 정보** (11-03): 시장 폭(다른 23개 코인 방향), 일봉 스윙 투표, BTC 선행, 머신러닝 메타 라벨(BTC·ETH 1.04→1.16이지만 알트 1.03→0.98), 코인베이스 프리미엄 — 크기 가중 적중률은 모두 50% 근처 그대로.
 """)
 
-with st.expander("△ 검증 성적 (5년, 과장 없이)", expanded=False):
+with tab_info.expander("△ 검증 성적 (5년, 과장 없이)", expanded=False):
     st.markdown("""
 | 방식 (BTC·ETH) | 연 수익 | 최대 낙폭 | 비고 |
 |---|---|---|---|
@@ -907,6 +955,6 @@ with st.expander("△ 검증 성적 (5년, 과장 없이)", expanded=False):
 """)
     st.caption("한계: 펀딩비는 맨 위 줄 비고만 반영, 미래에도 같다는 보장 없음, 하루 1% 복리 수준과는 거리가 멂. 소액일 때는 실제 주문 전 일지에 모의로 먼저 기록 권장.")
 
-render_journal()
+render_journal(tab_trade)
 if not errs:
-    render_diag(expanded=False)
+    render_diag(expanded=False, box=tab_info)
