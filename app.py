@@ -32,6 +32,7 @@ with st.expander("△ 설정", expanded=False):
     mtf_on = st.checkbox("흐름 정렬 역가중 (기본) — 주봉·일봉·4시간이 모두 같으면 ½, 4시간이 둘 다 거스르면 1.5배 · 11년 확인: 최근 5년은 좋았고(샤프 0.63→0.96) 2015~2021엔 나빴음(2.31→2.02), 낙폭은 줄어듦", True, key="mtf_on")
     shape_on = st.checkbox("두 달 모양 반반 운용 (실험) — 4시간 방식 절반 + 일봉 60일 모양 절반을 한 수량으로 합침", False, key="shape_on")
     trap_on = st.checkbox("베어트랩 추가 (엄격 기준 통과 · 설정값 민감) — 직전 저점을 깼다가 3봉 안에 되돌아오면 24시간 롱 추가", False, key="trap_on")
+    wave_on = st.checkbox("파동 국면 크기 (기본·권장) — 중파동이 높은 저점(2파)·4파 확인 뒤 새로 시작하면 그 방향 1.5배·반대 ½ · 11년 샤프 1.89→2.04, 비트겟 5년 1.36→1.55", True, key="wave_on")
     mode = st.radio("매매 방식 (하나만 고르기 — 둘은 보는 기간이 달라 서로 다른 말을 할 수 있음)",
                     ["4시간 추세 — 롱·숏 모두 (기본·권장, 낙폭 작음)", "스윙 — 길게 먹기 (롱만, 최근 5년 성적 약함, 낙폭 큼)"], key="mode")
 SWING = mode.startswith("스윙")
@@ -39,6 +40,7 @@ MAKER = order.startswith("지정가")
 MTF = bool(mtf_on)
 SHAPE = bool(shape_on) and not SWING
 TRAP = bool(trap_on) and not SWING
+WAVE = bool(wave_on) and not SWING
 WP = False   # 횡보면 ½: 11년 확인(2015~2021 처음 보는 기간)에서 나빠져 옵션 삭제 (cosmos.py · macro.py)
 
 
@@ -47,6 +49,11 @@ def load(symbol: str):
     df = data.drop_unclosed(data.fetch_candles(symbol, "4H", 1600), "4H")   # 주봉 26주 추세용 여유
     v = RL.one(df)
     v["src"] = data.SOURCE.get((symbol, "4H"), "Bitget")
+    try:
+        import wave_live as WL
+        v["wave"] = WL.state(df); v["wave_prev"] = WL.state(df.iloc[:-1]); v["f53"] = [f for f in (WL.fate53(df, 4.0), WL.fate53(df, 8.0)) if f]
+    except Exception:
+        v["wave"] = v["wave_prev"] = None; v["f53"] = []
     try:
         import cosmos_live as CL
         v["er"] = CL.er_state(df); v["er_prev"] = CL.er_state(df.iloc[:-1])
@@ -226,6 +233,22 @@ if SWING:
 
 st.caption("4시간 마감(01·05·09·13·17·21시) 직후 확인 · 마감가 기준 · 수익 보장 없음")
 
+def f53_txt(f, sym):
+    """5파·3파 판별 한 줄 (wave_live.fate53, 종가 기준)."""
+    nm = "중파동" if f["k"] == 4.0 else "대파동"; u = f["s"] > 0; w, o = ("상승", "하락") if u else ("하락", "상승")
+    up, dn = ("위", "아래") if u else ("아래", "위"); q = lambda x: f"{x:,.0f}"; br = "넘음" if u else "깸"
+    stt = f["state"]
+    if stt == "미결":
+        return f"{nm} {w} 5파 끝 {q(f['v5'])}로 셈 · 사실은 3파일 확률 {f['p3']:.0%} · {q(f['v5'])} {up} 마감 = 3파 확정(따라가기) · {q(f['v4'])} {dn}는 약한 신호"
+    if stt == "3파 확정":
+        return f"{nm} {w} '5파' 끝 {q(f['v5'])} {br}({f['ago']}봉 전) → 사실은 3파 · 11년: 뒤 7일 {w} 쪽 평균 5% (맞음 55%)"
+    if stt == "대기":
+        return f"{nm} {w} 5파 끝 판정({q(f['v4'])} 이탈) 뒤 대기 · {q(f['v5'])} {up} = {w} 재개 / {q(f['v0'])} {dn} = {o} 전환 · 그 사이 신호는 약함"
+    if stt == "추세 재개":
+        return f"{nm} {w} 5파 끝 판정 뒤 {q(f['v5'])} 다시 {br}({f['ago']}봉 전) → {w} 재개 · 11년: 뒤 7일 {w} 쪽 평균 7% (맞음 59%)"
+    return f"{nm} {w} 5파 시작점 {q(f['v0'])} 이탈({f['ago']}봉 전) → {o} 전환 · 11년: 뒤 7일 {o} 쪽 평균 6% (맞음 62%)"
+
+
 def render_diag(expanded=False):
     """접속 진단: 어느 시세 서버가 되는지, 어떤 버전으로 돌고 있는지."""
     with st.expander("△ 접속 진단", expanded=expanded):
@@ -359,7 +382,10 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     ers = v.get("er") if WP else None
     wf = CL.factor(ers)                                                   # 지금 봉 기준 직진 1 / 횡보 ½
     wfx = (lambda r: CL.factor(ers, CL.mid(r))) if ers else (lambda r: 1.0)
-    notional = k * (wt * v["pos"] * fx(v["pos"]) * wf + sp + tp)
+    import wave_live as WL
+    wvf = (lambda p: WL.factor(v.get("wave"), float(np.sign(p)))) if WAVE else (lambda p: 1.0)
+    wvr = (lambda r: WL.factor(v.get("wave"), float(np.sign(r["pos"])), CL.mid(r))) if WAVE else (lambda r: 1.0)   # 그 가격에 마감하면 (꼭짓점 되돌아 넘으면 해제)
+    notional = k * (wt * v["pos"] * fx(v["pos"]) * wf * wvf(v["pos"]) + sp + tp)
     px = live_px(sym); last = px[0] if px else v["close"]
     stp = STEP[sym]; dq = max(0, -int(np.floor(np.log10(stp))))
     q_now = qty(notional, last, stp); has = q_now != 0
@@ -377,9 +403,11 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     else:
         b.metric("진입 가격 (지금)", "-", "포지션 없음", delta_color="off")
     # 다음 마감 기준 가장 가까운 '할 일이 생기는' 가격 (위·아래)
-    T = CL.split_rows(v["trig"], ers) if ers else v["trig"]; up = dn = None
+    T = CL.split_rows(v["trig"], ers) if ers else v["trig"]
+    if WAVE: T = WL.split_rows(T, v.get("wave"))
+    up = dn = None
     for r in T:
-        act = todo(notional, k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) + sp + tp_next), last, stp, nm)
+        act = todo(notional, k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) * wvr(r) + sp + tp_next), last, stp, nm)
         if act == "유지" or act.startswith("없음"): continue
         if r["lo"] >= v["close"] - 1e-9 and (up is None or r["lo"] < up[0]): up = (r["lo"], act)
         if r["hi"] <= v["close"] + 1e-9 and (dn is None or r["hi"] > dn[0]): dn = (r["hi"], act)
@@ -392,7 +420,7 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     if has:
         strength = "(강)" if "(강)" in vd else "(약)"
         if not vd.startswith(side): strength = "(신호 약해짐 · 유지)"
-    q_prev = qty(k * (wt * v["pos_prev"] * fx(v["pos_prev"]) * CL.factor(v.get("er_prev") if WP else None) + sp + tp), last, stp)
+    q_prev = qty(k * (wt * v["pos_prev"] * fx(v["pos_prev"]) * CL.factor(v.get("er_prev") if WP else None) * (WL.factor(v.get("wave_prev"), float(np.sign(v["pos_prev"]))) if WAVE else 1.0) + sp + tp), last, stp)
     change = (f"방금 바뀜 ({close_t:%H:%M} 마감): {desc(q_prev, nm, dq)} → {desc(q_now, nm, dq)}" if q_prev != q_now else "")
     qline = (f"{abs(q_now):.{dq}f} {nm} · 약 {abs(q_now)*last:,.0f} USDT" if has else "포지션 없음")
     flow = "<br>".join(lines) if lines else "다음 마감까지 어느 가격이든 유지"
@@ -415,6 +443,15 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
             tdi = TOPDOWN.get(str(code))
             if tdi:
                 mood = f"{TD.label(code).replace(' · ', '·')} · 4주 내 전환 {tdi['flip']:.0%}<br>" + mood
+    wv = v.get("wave")
+    if wv and "label" in wv:
+        _a = lambda x: "▲" if x > 0 else ("▼" if x < 0 else "―")
+        _lab = (wv["label"].replace("완성", "끝").replace(" (0-3)", "").replace(" (0-4 유효)", "").replace("·", " ")
+                .replace(" (높은 저점)", "(높은 저점)" if wv["dir"] > 0 else "(낮은 고점)"))
+        _txt = f"파동 소{_a(wv['dirs'][2.0])} 중{_a(wv['dirs'][4.0])} 대{_a(wv['dirs'][8.0])} · 중파동 {_lab}"
+        if wv.get("active"):
+            _txt += f" → {'롱' if wv['dir'] > 0 else '숏'} 1.5배 · {wv['stop']:,.0f} {'아래' if wv['dir'] > 0 else '위'}면 해제" if WAVE else " (설정에서 켜야 반영)"
+        mood += ("<br>" if mood else "") + _txt
     if DOM:
         import dominance_live as DL
         mood += "<br>" if mood else ""
@@ -430,13 +467,13 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
               " / ".join(l.split(" → ")[1] for l in lines[:1]) if lines else "어느 가격에 마감해도 유지", delta_color="off")
     tb = []; seg = []
     for r in reversed(T):                                   # 위 가격대 → 아래, 같은 결과가 이어지면 한 줄로
-        tgt = qty(k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) + sp + tp_next), last, stp)
-        act = todo(notional, k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) + sp + tp_next), last, stp, nm)
+        tgt = qty(k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) * wvr(r) + sp + tp_next), last, stp)
+        act = todo(notional, k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) * wvr(r) + sp + tp_next), last, stp, nm)
         if seg and seg[-1][2] == tgt and seg[-1][3] == act: seg[-1][0] = r["lo"]
         else: seg.append([r["lo"], r["hi"], tgt, act])
     for lo_, hi_, tgt, act in seg:
         lo = "" if not np.isfinite(lo_) else f"{lo_:,.1f}"; hi = "" if not np.isfinite(hi_) else f"{hi_:,.1f}"
-        rng = f"{lo} 위" if not hi else (f"{hi} 아래" if not lo else f"{lo} ~ {hi}"); here = lo_ <= last < hi_
+        rng = "어느 가격이든" if not (lo or hi) else (f"{lo} 위" if not hi else (f"{hi} 아래" if not lo else f"{lo} ~ {hi}")); here = lo_ <= last < hi_
         tb.append({"다음 4H 마감가": rng + ("  ← 지금" if here else ""), "그때 포지션": (f"{'숏' if tgt < 0 else '롱'} {abs(tgt):.{dq}f} {nm} (약 {abs(tgt)*last:,.0f} USDT)" if tgt else "없음"),
                    "할 일": act})
     st.dataframe(pd.DataFrame(tb), hide_index=True, width="stretch")
@@ -450,6 +487,8 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         st.caption(f"결 · {e_['mode']} (효율비 {e_['er']:.2f}) — " + ("수익이 나는 구간" if e_["mode"] == "직진" else "본전 구간, 그대로 따르기"))
     if v.get("regime"):
         st.caption(f"상황 · {v['regime']} — 방법은 고정, 크기만 변동성에 맞춤")
+    if v.get("f53"):
+        st.caption("5파·3파 판별 · " + " │ ".join(f53_txt(f, sym) for f in v["f53"]) + " — 참고 (크기엔 안 씀)")
     if tr_:
         if tr_.get("active", 0) > 0:
             ttxt = f"발생 ({pd.Timestamp(tr_['last_event']).tz_convert('Asia/Seoul'):%m-%d %H:%M} 마감) → 롱 유지 남은 {tr_['active_left']}봉"
@@ -472,7 +511,7 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     st.plotly_chart(chart(df, v), width="stretch", key=f"ch_{sym}")
 
 try:
-    with open(STATE / ("certainty_mtf.json" if MTF else "certainty.json"), encoding="utf-8") as _fh:
+    with open(STATE / ("certainty_wave.json" if (MTF and WAVE) else ("certainty_mtf.json" if MTF else "certainty.json")), encoding="utf-8") as _fh:
         _cert = json.load(_fh)
     _tb = _cert["table"].get(f"{'maker' if MAKER else 'taker'}|{float(mult)}")
     if _tb:
@@ -488,25 +527,97 @@ try:
 except Exception:
     pass
 
-with st.expander("△ 하루 1% 기하 복리 — 배율별 성장 지도 (11-06)", expanded=False):
+with st.expander("△ 엘리어트 파동 다시 세기 — 5파·3파 판별법 · ABC·플랫 경우의 수 (BTC·ETH 11년, 11-09)", expanded=False):
+    st.markdown("""
+**바로잡기**: 지난번 '5파는 약하다와 반대'는 **같은 방향 꼭짓점이 다섯 번 이상 이어진 것**을 센 값이라 엘리어트 5파가 아니었음. 이번엔 규칙(2파는 시작점 안 깸 · 3파가 가장 짧지 않음 · 4파는 1파와 안 겹침)을 통과한 충격파만 5파로 셈.
+파동 크기 = 변동성 단위 (4시간 ATR의 2배 소 · 4배 중 · 8배 대).
+
+**① 규칙대로 센 5파 — 정말 약한가** (실제 vs 방향만 무작위로 섞은 거울 우주 60개)
+
+| | BTC | ETH | 무작위 | 판단 |
+|---|---|---|---|---|
+| 5파가 3파보다 짧음 (중파동) | 73% | 76% | 5파/3파 0.59 (실제 0.65·0.68) | 규칙(3파가 가장 짧으면 안 됨)이 만든 모양 |
+| 5파 연장 (다른 파동의 1.618배 이상) | 13% | 22% | 5~6% | **진짜 특징** (무작위 60개 모두보다 높음) |
+| 4파 뒤 5파가 3파 끝 못 넘음 (절단) | 45% | 50% | 38% | 약한 특징 |
+| 큰 파동 안에 작은 파동 4·8개 (겹침 구조) | 29% | 36% | | 3분의 1만 교과서대로 |
+
+**② 그 '5파'가 사실은 3파였나** (5파 완성 150번, 그 뒤 가격이 어디를 먼저 넘었나)
+- 5파 끝을 먼저 넘음(추세 연장) **48%** — 무작위도 48%. 그중 68%는 다시 세면 '0·1·2·3(=옛 5)·4·5' 충격파 → **전체의 약 3분의 1은 사실 3파(또는 연장 5파)였음**.
+- 4파 끝을 먼저 깸(교과서대로 조정) 52% → 그 뒤 5파 끝을 다시 넘음 53% / 시작점까지 다 되돌림 45% — 무작위 57% / 41%.
+
+**②-1 5파냐 3파냐 판별법 (11-09, 5개 차수 442번 · 거울 우주 100개)**
+- 확인 순간 단서 19개(파동 비율 7 · 시간·속도 · 5파 안 하위 파동 수 · RSI 다이버전스 · 거래량 · 채널 스로오버 · 상위 흐름) + 되돌림이 진행되는 동안 단서 7개(깊이 · 하위 파동 수 · 되돌림이 5파 충격파 모양인지 · 겹침 · 속도) + 공포·탐욕 + 한 단계 큰 차수 국면:
+  앞 절반으로 배우고 뒤 절반·다른 코인 맞히기 → **거리 비율 위에 더해 준 정보 0** (최고 +0.26비트/100건, 무작위 우주 상위 5%보다 작음).
+- 맞히는 건 **거리 비율** 하나: 지금 가격에서 4파 끝까지 vs 5파 끝까지 → 시험 AUC 0.69. 실제 보정 — 거리 확률 10%→19% · 30%→37% · 50%→51% · 70%→64% · 90%→81% (끝으로 갈수록 덜 극단).
+- **판정이 난 뒤는 강하게 갈림** (뒤 7일 = 42봉, 판정 방향으로):
+
+| 판정 | 횟수 | 뒤 7일 평균 / 중앙 | 맞음 | 무작위 우주 |
+|---|---|---|---|---|
+| 5파 끝 돌파 = **사실은 3파 확정** | 223 | **+5.4% / +1.4%** | 55% | 0 (p=0.00) |
+| 4파 끝 이탈 = '5파 끝' 판정 → 꺾인 쪽 따라가기 | 218 | −1.3% / −0.8% | 46% | 손해 |
+| 판정 뒤 5파 끝 다시 돌파 = **추세 재개** | 113 | **+7.0% / +6.5%** | 59% | 0 (p=0.00) |
+| 판정 뒤 시작점 이탈 = **추세 전환** | 104 | **+6.2% / +3.6%** | 62% | 0 (p=0.00) |
+
+- 상승·하락, BTC·ETH, 앞·뒤 절반, 차수 5개 모두 같은 방향. → **극점(5파 끝·시작점) 돌파만 믿고, 중간(4파 끝) 이탈은 믿지 않기.**
+- 앱 크기 규칙(판정 뒤 7일 그 방향 1.5배·반대 ½)으로 넣으면 11년 2.04 → 2.12 (앞 +0.10 · 뒤 +0.05 · BTC +0.07 · ETH +0.08), 비트겟 5년 1.55 → 1.57 — 엄격 기준(+0.10) 미달 → 크기엔 안 쓰고 차트 위 '5파·3파 판별' 줄로만 표시.
+
+**③ 조정 파동 (ABC 지그재그 · 정규/확장/러닝 플랫 · 삼각형)**
+- 비율: 러닝 플랫 29~33% · 기타 조정 31~37% · 지그재그 12~19% · 확장 플랫 12~14% · 정규 플랫 6~8% · 삼각형 거의 없음 → **무작위와 거의 같음** (30·31·18·16·4%).
+- 조정이 끝난 뒤 추세 재개 비율도 무작위와 비슷 (러닝 플랫 76~100% vs 93% · 지그재그 0~10% vs 15%).
+- 패턴별 매매(지그재그·플랫·삼각형 끝 재진입, 교대 원칙 5파, 절단 5파 뒤 역추세): 대부분 샤프 0 근처, 앞·뒤 절반 뒤집힘. 앱에 더하면 12개 모두 기각.
+
+**④ 경우의 수 엔진 — 꼭짓점이 확인된 순간 국면별로 다음 파동이 직전 꼭짓점을 넘을 확률 (중파동)**
+
+| 국면 | 횟수 | 돌파 (앞 절반 / 뒤 절반) |
+|---|---|---|
+| 2파 완성 (높은 저점 · 하락이면 낮은 고점) | 615 | **61% / 58%** |
+| 4파 완성 (0-4 유효) | 106 | **68% / 60%** |
+| A·B파 완성 | 148 | 37~48% |
+| 3파 완성 · 5파 완성 | 466 | 20~32% |
+| 전체 평균 | | 44% / 45% |
+
+- 앞 절반에서 고른 두 국면(2파·4파 완성)을 그대로 크기 조절에 씀: **새 파동과 앱 방향이 같으면 1.5배, 반대면 ½**, 그 꼭짓점을 종가로 되돌아 넘으면 해제.
+- 확인: 같은 개수의 꼭짓점을 무작위로 고른 200번 → 개선 평균 +0.02, 상위 10% +0.09 vs 채택 **+0.16** (무작위가 이 이상 0%). BTC p=0.06 · ETH p=0.01.
+- 힘의 출처: '2파 완성만' +0.17 ≈ 채택(+0.16), '4파만' −0.02, 모든 꼭짓점 +0.06(낙폭 −19%), 나머지 이름표 −0.13, 5파 −0.01, 3파 −0.09. → **실제로 일하는 건 높은 저점·낮은 고점 확인 뒤 새 파동** (다우 이론 = 엘리어트 2파).
+- 돌파 확률 자체는 무작위 우주에서도 비슷하게 높음 (꼭짓점 정의가 만든 부분). 차이는 터진 뒤 길이: 2파·4파 뒤 새 파동 길이 2.3~2.5 vs 3파·5파 뒤 1.8.
+
+**⑤ 채택 → 설정의 '파동 국면 크기' 기본 켬** (엄격 판정 통과)
+
+| | 지금 앱 | + 파동 국면 |
+|---|---|---|
+| 코인베이스 11년 샤프 | 1.89 | **2.04** (BTC +0.08 p=0.02 · ETH +0.19 p=0.00) |
+| 앞 / 뒤 절반 · 3등분 | 2.66 / 1.16 · 2.69 / 1.58 / 1.43 | 2.81 / 1.32 · 2.86 / 1.72 / 1.59 |
+| 지난 1년 | 0.19 | 0.70 |
+| 비트겟 무기한 5년 (앱이 쓰는 시세) | 1.36 · 연 +20% · 낙폭 −13% | **1.55** · 연 +30% · 낙폭 −12% |
+| 이웃 설정 | | 차수 ATR×3~6 모두 ≥ 1.89, 배수 1.25/0.75~2.0/0.5 모두 ≥ 1.93 |
+
+- 지금 중파동 국면은 카드의 '파동' 줄, 5파·3파 판별은 차트 위 글로 표시.
+
+**⑥ 하루 1%까지** (배율 1.5 → 낙폭 −50% 안쪽 최고 배율, 봉 안 청산 반영)
+- 2022~2026: 하루 0.10% → **0.21%** (배율 4, 낙폭 −44%) · 베어트랩까지 0.25%.
+- 최근 2년: 0.12% → **0.28%** (배율 4, −43%) · 베어트랩까지 0.31%.
+- 가장 좋았던 2016~2018: 배율 10에서 1.03% (−69%) — 1%는 그 시대에만 닿음. 지금 시대 샤프 1.4~1.8 < 필요 2.7.
+""")
+
+with st.expander("△ 하루 1% 기하 복리 — 배율별 성장 지도 (11-09 · 파동 국면 포함)", expanded=False):
     st.markdown("""
 **목표**: 수익일·손실일이 섞인 실제 결과를 복리로 쌓아 하루 평균 기하 성장 1% = 1년 37.8배.
 **조건**: 로그 성장의 최대치는 샤프²/2 → 연 샤프 **2.70 이상**(켈리 배율, 낙폭 매우 큼) 또는 3.11(켈리 ½)이 몇 년간 유지돼야 함.
 
 | 배율 | 2022~2026 하루 / 1년 | 최근 2년 하루 / 1년 | 최대 낙폭 |
 |---|---|---|---|
-| 1 | 0.05% / 1.2배 | 0.06% / 1.2배 | −12% |
-| 1.5 (기본) | 0.07% / 1.27배 | 0.08% / 1.36배 | −17% |
-| 2 | 0.09% / 1.37배 | 0.11% / 1.49배 | −23% |
-| 3 | 0.12% / 1.55배 | 0.16% / 1.77배 | −32% |
-| 4 | 0.15% / 1.73배 | 0.20% / 2.07배 | −41% |
-| 5 | 0.17% / 1.89배 | 0.24% / 2.37배 | −49% |
-| 10~15 (한계) | 0.22% | 0.37% | −80~−90% |
-| 20 이상 | 파산 (2019-02·2022-11 FTX 같은 4시간 급락 한 번) | | |
+| 1 | 0.07% / 1.27배 | 0.08% / 1.34배 | −13% |
+| 1.5 (기본) | 0.10% / 1.42배 | 0.12% / 1.54배 | −19% |
+| 2 | 0.12% / 1.57배 | 0.15% / 1.75배 | −24% |
+| 3 | 0.17% / 1.87배 | 0.22% / 2.22배 | −35% |
+| 4 | 0.21% / 2.17배 | 0.28% / 2.73배 | −44% |
+| 5 | 0.24% / 2.43배 | 0.33% / 3.28배 | −52% |
+| 8~12 (한계) | 0.29% | 0.47% | −72~−88% |
+| 12 이상 | 2022~ 파산 (FTX 같은 4시간 급락 한 번) | | |
 
-- 지금 앱 그대로, 비용·롱 펀딩·봉 안 최저가 청산까지 반영한 실제 복리 (BTC·ETH 코인베이스 4H).
-- 가장 좋았던 2016~2018년(샤프 2.87)도 실제 최고는 하루 0.77% (배율 10, 낙폭 −66%) — 이론(1.14%)보다 낮은 건 급락 꼬리 때문.
-- 지금 시대 샤프는 1.2~1.6 → 현실적 최대 하루 0.1~0.25% (1년 1.4~2.4배). 베어트랩을 더해도 −0.01~+0.09%p.
+- 지금 앱 기본(흐름 정렬 역가중 + 파동 국면 크기) 그대로, 비용·롱 펀딩·봉 안 최저가 청산까지 반영한 실제 복리 (BTC·ETH 코인베이스 4H).
+- 가장 좋았던 2016~2018년(샤프 3.14)은 배율 10에서 하루 1.03% (낙폭 −69%) — 1%에 닿은 유일한 시대.
+- 지금 시대 샤프 1.4~1.8 → 현실적 최대 하루 0.2~0.3% (1년 2~3배). 베어트랩을 더하면 +0.03~0.04%p.
 - 지난 1년 성적으로 배율을 정하는 방식(켈리 ½, 최대 10)도 2022~ 하루 0.12%, 최근 2년 0.21% (낙폭 −54%).
 - 1%로 가려면 서로 독립적인 수익원(샤프 1짜리 7~8개)이 필요한데, BTC·ETH(상관 0.9)의 추세 추종은 사실상 하나.
 - 표의 배율은 지나고 나서 본 값 — 앞으로도 같다는 보장 없음. 4~5는 자본이 절반까지 줄어드는 구간을 견딜 수 있을 때만.
