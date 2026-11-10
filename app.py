@@ -33,9 +33,34 @@ with st.expander("△ 설정", expanded=False):
     shape_on = st.checkbox("두 달 모양 반반 운용 (실험) — 4시간 방식 절반 + 일봉 60일 모양 절반을 한 수량으로 합침", False, key="shape_on")
     trap_on = st.checkbox("베어트랩 추가 (엄격 기준 통과 · 설정값 민감) — 직전 저점을 깼다가 3봉 안에 되돌아오면 24시간 롱 추가", False, key="trap_on")
     flow_on = st.checkbox("돈의 흐름 주머니 (기본·권장) — 테더·코인베이스 프리미엄이 높으면 롱 쪽, 낮으면 숏 쪽으로 최대 변동성 목표의 ½ 추가 · 비트겟 2022-08~ 샤프 1.77→1.95", True, key="flow_on")
+    trail_on = st.checkbox("추적 부분익절 (기본·권장) — 방향 시작 뒤 유리하게 2ATR 이상 갔다가 최고점에서 2ATR 되돌리면 절반 익절 · 비트겟 2022-08~ 샤프 1.95→2.15, 낙폭 −16%→−12% (같은 배율이면 연 수익은 조금 줄고, 같은 낙폭이면 성장 ↑)", True, key="trail_on")
     wave_on = st.checkbox("파동 국면 크기 (기본·권장) — 중파동이 높은 저점(2파)·4파 확인 뒤 새로 시작하면 그 방향 1.5배·반대 ½ · 11년 샤프 1.89→2.04, 비트겟 5년 1.36→1.55", True, key="wave_on")
     mode = st.radio("매매 방식 (하나만 고르기 — 둘은 보는 기간이 달라 서로 다른 말을 할 수 있음)",
                     ["4시간 추세 — 롱·숏 모두 (기본·권장, 낙폭 작음)", "스윙 — 길게 먹기 (롱만, 최근 5년 성적 약함, 낙폭 큼)"], key="mode")
+    _qp = st.query_params
+    def _qf(k_):
+        try:
+            return float(_qp.get(k_, 0) or 0)
+        except Exception:
+            return 0.0
+    my_on = st.checkbox("내 실제 포지션 입력 (선택) — 넣으면 '지금 할 일'과 익절·손절을 내 수량·평단 기준으로 판정 (안 넣으면 앱을 그대로 따랐다고 가정)", _qp.get("my") == "1", key="my_on")
+    MY = {}
+    if my_on:
+        _c = st.columns(4)
+        bq = _c[0].number_input("BTC 수량 (+롱 −숏)", -100.0, 100.0, _qf("bq"), 0.0001, format="%.4f", key="bq")
+        be = _c[1].number_input("BTC 평단", 0.0, 10_000_000.0, _qf("be"), 1.0, format="%.1f", key="be")
+        eq_ = _c[2].number_input("ETH 수량 (+롱 −숏)", -10000.0, 10000.0, _qf("eq"), 0.01, format="%.2f", key="eq")
+        ee = _c[3].number_input("ETH 평단", 0.0, 1_000_000.0, _qf("ee"), 0.1, format="%.2f", key="ee")
+        MY = {"BTCUSDT": (float(bq), float(be) or None), "ETHUSDT": (float(eq_), float(ee) or None)}
+        _new = {"my": "1", "bq": f"{bq:g}", "be": f"{be:g}", "eq": f"{eq_:g}", "ee": f"{ee:g}"}
+        st.caption("주소창 주소를 즐겨찾기하면 입력값이 남습니다. 수량·평단은 거래소 포지션 화면 그대로.")
+    else:
+        _new = {"my": "0"}
+    if any(_qp.get(k_) != v_ for k_, v_ in _new.items()):
+        try:
+            _qp.update(_new)
+        except Exception:
+            pass
 SWING = mode.startswith("스윙")
 MAKER = order.startswith("지정가")
 MTF = bool(mtf_on)
@@ -43,6 +68,7 @@ SHAPE = bool(shape_on) and not SWING
 TRAP = bool(trap_on) and not SWING
 WAVE = bool(wave_on) and not SWING
 FLOW = bool(flow_on) and not SWING
+TRAIL = bool(trail_on) and not SWING
 WP = False   # 횡보면 ½: 11년 확인(2015~2021 처음 보는 기간)에서 나빠져 옵션 삭제 (cosmos.py · macro.py)
 
 
@@ -61,7 +87,12 @@ def load(symbol: str):
         v["er"] = CL.er_state(df); v["er_prev"] = CL.er_state(df.iloc[:-1])
     except Exception:
         v["er"] = v["er_prev"] = None
-    v["pos_prev"] = RL.one(df.iloc[:-1])["pos"]          # 직전 마감 기준 목표 (방금 바뀌었는지 표시용)
+    v["pos_prev"] = RL.one(df.iloc[:-1])["pos"]
+    try:
+        import trade_live as TL0
+        v["trail"] = TL0.trail_state(df); v["trail_prev"] = TL0.trail_state(df.iloc[:-1])
+    except Exception:
+        v["trail"] = v["trail_prev"] = None          # 직전 마감 기준 목표 (방금 바뀌었는지 표시용)
     try:
         import mtf_live as ML
         v["mtf"] = ML.state(df)
@@ -377,20 +408,21 @@ def chip(t, tone=0):
     return f'<span style="display:inline-block;margin:3px 4px 0 0;padding:1px 8px;border-radius:10px;background:{col[1]};color:{col[0]};font-size:0.78rem;white-space:nowrap">{t}</span>'
 
 
-def badge(nm, price, word, strength, qty_line, change, flow, next_t, chips="", case="", entry=""):
+def badge(nm, price, word, strength, qty_line, action, sub, lines, next_t, chips="", conf="", entry="", hold=""):
     bg, bd, ac, label = BADGE[word]
-    chg = (f'<div style="margin-top:8px;background:#fff8dc;border:1px solid #f0e2a8;color:#6b5400;border-radius:6px;padding:3px 8px;font-size:0.84rem;font-weight:600">{change}</div>' if change
-           else '<div style="margin-top:6px;font-size:0.8rem;color:#6b7280">지금 할 일 · 이번 마감엔 바뀐 것 없음 → 내 포지션이 위와 같으면 그대로</div>')
+    ln = ("".join(f'<div style="margin-top:3px">{x}</div>' for x in lines) + '<div style="margin-top:3px;color:#6b7280;font-size:0.8rem">그 밖의 가격이면 유지</div>') if lines else '<div style="margin-top:3px;color:#6b7280">어느 가격에 마감해도 그대로</div>'
     return (f'<div style="border-radius:12px;padding:12px 14px 10px 14px;margin-bottom:12px;background:{bg};border:1px solid {bd};border-left:5px solid {ac};color:#374151;line-height:1.45">'
-            f'<div style="display:flex;justify-content:space-between;align-items:baseline">'
-            f'<span style="font-size:1.5rem;font-weight:700;color:{ac}">{label}<span style="font-size:0.85rem;font-weight:500;color:#6b7280"> {strength}</span></span>'
-            f'<span style="font-size:0.9rem;color:#374151;font-weight:600">{nm} {price}</span></div>'
+            f'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">'
+            f'<span style="font-size:1.45rem;font-weight:700;color:{ac}">{label}<span style="font-size:0.85rem;font-weight:500;color:#6b7280"> {strength}</span></span>'
+            f'<span style="font-size:0.9rem;color:#374151;font-weight:600;white-space:nowrap">{nm} {price}</span></div>'
             f'<div style="font-size:1.0rem;font-weight:600;color:#1f2937">{qty_line}</div>'
-            + (f'<div style="font-size:0.8rem;color:#6b7280">{entry}</div>' if entry else "") + chg +
-            f'<div style="margin-top:7px;font-size:0.86rem;color:#1f2937">{flow}</div>'
-            + (f'<div style="margin-top:7px;padding-top:6px;border-top:1px dashed {bd}">{chips}</div>' if chips else "")
-            + (f'<div style="margin-top:5px;font-size:0.8rem;color:#374151">{case}</div>' if case else "") +
-            f'<div style="margin-top:4px;font-size:0.75rem;color:#9ca3af">다음 판단 {next_t:%H:%M} 마감</div></div>')
+            + (f'<div style="margin-top:4px">{conf}</div>' if conf else "") +
+            f'<div style="margin-top:9px;padding:8px 10px;background:#ffffffcc;border-radius:8px;border:1px solid {bd}">'
+            f'<div style="font-size:0.74rem;color:#6b7280;margin-bottom:3px">지금 할 일 · {sub}</div>{action}'
+            + (f'<div style="font-size:0.78rem;color:#6b7280;margin-top:4px">{entry}</div>' if entry else "") + '</div>'
+            + (f'<div style="margin-top:6px;font-size:0.8rem;color:#374151">{hold}</div>' if hold else "") +
+            f'<div style="margin-top:8px;font-size:0.74rem;color:#6b7280">다음 {next_t:%H:%M} 마감가가</div><div style="font-size:0.86rem;color:#1f2937">{ln}</div>'
+            + (f'<div style="margin-top:8px;padding-top:6px;border-top:1px dashed {bd}">{chips}</div>' if chips else "") + '</div>')
 
 
 def desc(q, nm, dq):
@@ -425,7 +457,11 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     import wave_live as WL
     wvf = (lambda p: WL.factor(v.get("wave"), float(np.sign(p)))) if WAVE else (lambda p: 1.0)
     wvr = (lambda r: WL.factor(v.get("wave"), float(np.sign(r["pos"])), CL.mid(r))) if WAVE else (lambda r: 1.0)   # 그 가격에 마감하면 (꼭짓점 되돌아 넘으면 해제)
-    notional = k * (wt * v["pos"] * fx(v["pos"]) * wf * wvf(v["pos"]) + sp + tp)
+    import trade_live as TL
+    trl = v.get("trail") if TRAIL else None
+    tfx = (lambda raw, price=None: TL.factor(trl, float(np.sign(raw)), price)) if trl else (lambda raw, price=None: 1.0)
+    _raw = k * (wt * v["pos"] * fx(v["pos"]) * wf * wvf(v["pos"]) + sp + tp)
+    notional = _raw * tfx(_raw)
     px = live_px(sym); last = px[0] if px else v["close"]
     stp = STEP[sym]; dq = max(0, -int(np.floor(np.log10(stp))))
     q_now = qty(notional, last, stp); has = q_now != 0
@@ -443,28 +479,65 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     # 다음 마감 기준 가장 가까운 '할 일이 생기는' 가격 (위·아래)
     T = CL.split_rows(v["trig"], ers) if ers else v["trig"]
     if WAVE: T = WL.split_rows(T, v.get("wave"))
+    if trl: T = TL.split_rows(T, trl)
+    raw_of = lambda r: k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) * wvr(r) + sp + tp_next)
+    tgt_of = lambda r: raw_of(r) * tfx(raw_of(r), CL.mid(r))
     up = dn = None
-    for r in T:
-        act = todo(notional, k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) * wvr(r) + sp + tp_next), last, stp, nm)
-        if act == "유지" or act.startswith("없음"): continue
-        if r["lo"] >= v["close"] - 1e-9 and (up is None or r["lo"] < up[0]): up = (r["lo"], act)
-        if r["hi"] <= v["close"] + 1e-9 and (dn is None or r["hi"] > dn[0]): dn = (r["hi"], act)
+    # 기준 포지션: 내 입력 또는 '직전 마감 목표를 그대로 따랐다'
+    _rawp = k * (wt * v["pos_prev"] * fx(v["pos_prev"]) * CL.factor(v.get("er_prev") if WP else None) * (WL.factor(v.get("wave_prev"), float(np.sign(v["pos_prev"]))) if WAVE else 1.0) + sp + tp)
+    q_prev = qty(_rawp * (TL.factor(v.get("trail_prev"), float(np.sign(_rawp))) if TRAIL else 1.0), last, stp)
+    def app_entry(q):
+        for st_ in (v.get("trail"), v.get("trail_prev")):
+            if st_ and st_.get("dir") and np.sign(q) == st_["dir"]: return st_["c0"], st_["t0"]
+        return None, None
+    mine = MY.get(sym) if MY else None
+    if mine is not None:
+        ref_q, ref_e = qty(mine[0] * last, last, stp) if mine[0] else 0.0, mine[1]; ref_src = "내 입력"
+    else:
+        ref_q = q_prev; ref_e, _t0 = app_entry(q_prev); ref_src = "앱 기준"
+    kind, ktxt = TL.classify(ref_q, q_now, last, ref_e, stp, nm)
+    if kind in ("부분익절", "익절") and trl and TL.factor(v.get("trail_prev"), float(np.sign(_rawp))) == 1.0 and TL.factor(trl, float(np.sign(_raw))) < 1.0:
+        ktxt += " · 최고점 대비 2ATR 되돌림"
+    # 진입 뒤 평단 (다음 마감 판정용)
+    if mine is not None and mine[1] and np.sign(mine[0]) == np.sign(q_now): e_now, e_src = mine[1], "내 평단"
+    else:
+        e_now, _t0 = app_entry(q_now); e_src = "앱 기준 평단"
+        if e_now is None: e_now, e_src = last, "지금 가격"
     lines = []
-    if up and np.isfinite(up[0]): lines.append(f"▲ {up[0]:,.1f} 위 마감 → {up[1]}")
-    if dn and np.isfinite(dn[0]): lines.append(f"▼ {dn[0]:,.1f} 아래 마감 → {dn[1]}")
+    for r in T:
+        tg = qty(tgt_of(r), last, stp)
+        if abs(tg - q_now) < stp / 2: continue
+        if r["lo"] >= v["close"] - 1e-9 and (up is None or r["lo"] < up[0]): up = (r["lo"], tg, r)
+        if r["hi"] <= v["close"] + 1e-9 and (dn is None or r["hi"] > dn[0]): dn = (r["hi"], tg, r)
+    tf_now = tfx(_raw)
+    for edge, arrow, word_ in ((up, "▲", "위"), (dn, "▼", "아래")):
+        if edge and np.isfinite(edge[0]):
+            kd, tx = TL.classify(q_now, edge[1], edge[0], e_now, stp, nm)
+            if kd in ("부분익절", "익절") and trl and np.sign(raw_of(edge[2])) == trl.get("dir") and tfx(raw_of(edge[2]), CL.mid(edge[2])) < tf_now:
+                tx += " · 최고점 대비 2ATR 되돌림" + (" (½이 최소 주문 단위보다 작아 전량)" if (edge[1] == 0 and abs(tgt_of(edge[2])) > 0.5) else "")
+            lines.append(f"{arrow} <b>{edge[0]:,.{pf}f}</b> {word_} → " + TL.pill(kd, tx))
     # 상단 한눈 배지
     word = "관망" if not has else side
     vd = RL.verdict(v["dir"]); strength = ""
     if has:
         strength = "(강)" if "(강)" in vd else "(약)"
         if not vd.startswith(side): strength = "(신호 약해짐 · 유지)"
-    q_prev = qty(k * (wt * v["pos_prev"] * fx(v["pos_prev"]) * CL.factor(v.get("er_prev") if WP else None) * (WL.factor(v.get("wave_prev"), float(np.sign(v["pos_prev"]))) if WAVE else 1.0) + sp + tp), last, stp)
-    change = (f"지금 할 일 · {close_t:%H:%M} 마감에 바뀜: {desc(q_prev, nm, dq)} → {desc(q_now, nm, dq)}" if q_prev != q_now else "")
+    change = q_prev != q_now
+    action = TL.pill(kind, ktxt, big=True)
+    sub = (f"{close_t:%H:%M} 마감 기준 · {('내 포지션 ' + desc(ref_q, nm, dq)) if mine is not None else ('직전 목표 ' + desc(q_prev, nm, dq) + '를 따랐다면')}")
+    hold = ""
+    if has and e_now and e_src != "지금 가격":
+        _pn = np.sign(q_now) * (last / e_now - 1)
+        _t0s = f", {pd.Timestamp(app_entry(q_now)[1]).tz_convert('Asia/Seoul'):%m-%d %H:%M}" if (e_src == "앱 기준 평단" and app_entry(q_now)[1]) else ""
+        hold = f"{e_src} {e_now:,.{pf}f}{_t0s} · 지금 <b style='color:{'#15803d' if _pn >= 0 else '#b91c1c'}'>{_pn:+.1%}</b> {'수익 중' if _pn >= 0 else '손실 중'}"
+        if trl and np.sign(q_now) == trl.get("dir"):
+            if TRAIL and trl.get("cut"): hold += " · 절반 익절 완료(이 방향 끝날 때까지 ½)"
+            elif trl.get("cut_px") is not None: hold += f" · 부분익절 감시 중 (최고 {trl['peak']:,.{pf}f})"
+            else: hold += f" · {trl['arm_px']:,.{pf}f} {'위' if trl['dir'] > 0 else '아래'}까지 가면 부분익절 감시 시작"
     qline = (f"{abs(q_now):.{dq}f} {nm} · 약 {abs(q_now)*last:,.0f} USDT" if has else "포지션 없음")
     arw = lambda x: "▲" if x > 0 else ("▼" if x < 0 else "―")
     _vd = RL.verdict(v["dir"]); _st = "강" if "(강)" in _vd else ("약" if "(약)" in _vd else "중립")
     chips = chip(f"추세 {arw(v['dir']) if _st != '중립' else '―'} {_st}", v["dir"] if _st != "중립" else 0)
-    flow = "<br>".join(lines) if lines else "다음 마감까지 어느 가격이든 유지"
     mood = ""
     if v.get("fake_streak") is not None:
         mx = FAKE_RUNS.get(sym, {}).get("max_run")
@@ -503,9 +576,9 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
             _key = "흐름 강하게 같은 쪽 (≥1σ)" if _ag >= 1 else ("흐름 약하게 같은 쪽" if _ag > 0 else ("흐름 약하게 반대" if _ag > -1 else "흐름 강하게 반대 (≤−1σ)"))
             _c = CASES.get(_key)
             if _c:
-                _good = _c["mean"] > 0.005; _bad = _c["mean"] < -0.005
-                case = (f"<b>지금 경우</b> · {side} + {_key.split(' (')[0]} → 과거 7일 이 포지션 평균 "
-                        f"<span style='color:{'#1f7a45' if _good else ('#b23b3b' if _bad else '#4b5563')};font-weight:600'>{_c['mean']:+.1%}</span> · 맞음 {_c['hit']:.0%} <span style='color:#9ca3af'>(2022-08~, 시간의 {_c['share']:.0%})</span>")
+                _tier, _col = ("높음", "#15803d") if _ag >= 1 else (("낮음", "#b91c1c") if _ag <= -1 else ("보통", "#4b5563"))
+                case = (f"<span style='display:inline-block;border:1px solid {_col}55;color:{_col};border-radius:10px;padding:1px 8px;font-size:0.8rem;font-weight:700'>신뢰도 {_tier}</span>"
+                        f"<span style='font-size:0.78rem;color:#4b5563'> 과거 같은 경우({side} + {_key.split(' (')[0]}) 7일 뒤 이 포지션 맞음 {_c['hit']:.0%} · 평균 {_c['mean']:+.1%}</span>")
     if DOM:
         import dominance_live as DL
         mood += "<br>" if mood else ""
@@ -516,13 +589,14 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
             mood += (f"TOTAL3 7일 {DL.label(DOM['t3_z7'])}({DOM['t3_z7']:+.1f}σ) · 30일 {DL.label(DOM['t3_z30'])}({DOM['t3_z30']:+.1f}σ) · 알트 비중 {DL.arrow(DOM['alt_tr'])}"
                      if "t3_z7" in DOM else f"TOTAL3 {DL.arrow(DOM['t3_tr'])} · 알트 비중 {DL.arrow(DOM['alt_tr'])}")
     with badge_cols[i_c]:
-        st.markdown(badge(nm, f"${last:,.{pf}f}", word, strength, qline, change, flow, next_t, chips, case, entry), unsafe_allow_html=True)
+        st.markdown(badge(nm, f"${last:,.{pf}f}", word, strength, qline, action, sub, lines, next_t, chips, case, entry, hold), unsafe_allow_html=True)
     if mood:
         tab_info.markdown(f'<div style="font-size:0.85rem;color:#4b5563;line-height:1.5">{mood}</div>', unsafe_allow_html=True)
     tb = []; seg = []
     for r in reversed(T):                                   # 위 가격대 → 아래, 같은 결과가 이어지면 한 줄로
-        tgt = qty(k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) * wvr(r) + sp + tp_next), last, stp)
-        act = todo(notional, k * (wt * r["pos"] * fx(r["pos"]) * wfx(r) * wvr(r) + sp + tp_next), last, stp, nm)
+        tgt = qty(tgt_of(r), last, stp)
+        _px = r["lo"] if np.isfinite(r["lo"]) and r["lo"] >= v["close"] else (r["hi"] if np.isfinite(r["hi"]) else last)
+        _kd, _tx = TL.classify(q_now, tgt, _px, e_now, stp, nm); act = f"{_kd} · {_tx}"
         if seg and seg[-1][2] == tgt and seg[-1][3] == act: seg[-1][0] = r["lo"]
         else: seg.append([r["lo"], r["hi"], tgt, act])
     for lo_, hi_, tgt, act in seg:
@@ -635,6 +709,24 @@ with tab_info.expander("△ 재분석 — 가격 모양 말고 '돈이 실제로
 - 같은 낙폭에서 비교하면 하루 +0.03~0.05%p. 1%에는 여전히 못 미침(현실적 상한 0.3~0.4%).
 - 주의: 테더·코인베이스 자료가 2021-10부터라 검증 기간이 4.3년뿐, 그중 좋은 시기 비중이 큼.
 
+**⑤ 신뢰도와 익절·손절 다듬기 (11-10)**
+- **신뢰도 모형**: 점수 크기·추세/호흡 성분·주봉·일봉 일치·파동 국면·방향 나이·시작 뒤 유리하게 간 정도·효율비·변동성으로 '지금 방향이 7일 뒤 수익일 확률'을 매년 그 전 해까지로 배워 다음 해를 맞힘.
+  바이낸스 2019~ 표본 밖 구별력(AUC) **0.50 = 못 맞힘** · 비트겟 2023~에 돈의 흐름 일치를 더하면 0.56 (2024 0.56 · 2025 0.50 · 2026 0.64). 신뢰도로 크기를 바꾸면 오히려 나빠짐(1.65→1.51 등).
+  → 카드의 **신뢰도 = 돈의 흐름이 내 포지션과 같은 쪽인지** (강하게 같은 쪽 높음: 맞음 59%·+2.5% / 보통 45~48% / 강하게 반대 낮음: 37%·−2.0%). 크기에는 안 씀.
+- **부분손절 따로 두기**(불리 1·1.5·2·3ATR → ½): 세 데이터 모두 효과 없음 → 손절은 앱의 전환 가격이 맡음.
+- **고정 부분익절**(유리 3·5·8ATR → ½): 모두 나빠짐 — 크게 가는 추세를 일찍 줄임.
+- **추적 부분익절**(유리 2ATR 이상 간 뒤 최고점에서 2ATR 되돌리면 ½) → **채택 (기본 켬)**:
+
+| | 지금 | + 추적 부분익절 |
+|---|---|---|
+| 비트겟 2022-08~ | 1.95 · 연 +54% · 낙폭 −16% | **2.15** · +47% · **−12%** (엄격 통과) |
+| 바이낸스 2017-08~ | 1.62 · +31% · −15% | 1.72 · +27% · −12% |
+| 코인베이스 11년 | 2.04 · +41% · −14% | 2.08 · +33% · −12% |
+| 하루 성장 (비트겟, 낙폭 −50% 근처) | 배율 4: 0.39% (−51%) | 배율 5: **0.44%** (−50%) |
+
+  이웃: 1.5·2.5ATR, 남기는 몫 ⅓·⅔ 모두 비슷하게 좋아짐. 같은 배율이면 연 수익은 줄고 낙폭이 더 크게 줄어듦 → **같은 낙폭이면 배율을 한 단계 올릴 수 있음** (1.5 대신 2가 예전 1.5와 같은 낙폭).
+- 카드의 말: **진입 · 추가 · 부분익절 · 부분손절 · 익절 · 손절 · 뒤집기 · 유지 · 관망**. 익절/손절은 평단(앱이 그 방향을 시작한 마감가, 또는 설정에서 넣은 내 평단) 대비 그 가격에서 수익이냐 손실이냐로 가름.
+
 **④ 경우의 수 재검토 (2차, 11-09 오후) — 더 나은 길이 있나**
 
 | 시험한 것 | 결과 |
@@ -691,6 +783,11 @@ with tab_info.expander("△ 엘리어트 파동 다시 세기 — 5파·3파 판
 - 비율: 러닝 플랫 29~33% · 기타 조정 31~37% · 지그재그 12~19% · 확장 플랫 12~14% · 정규 플랫 6~8% · 삼각형 거의 없음 → **무작위와 거의 같음** (30·31·18·16·4%).
 - 조정이 끝난 뒤 추세 재개 비율도 무작위와 비슷 (러닝 플랫 76~100% vs 93% · 지그재그 0~10% vs 15%).
 - 패턴별 매매(지그재그·플랫·삼각형 끝 재진입, 교대 원칙 5파, 절단 5파 뒤 역추세): 대부분 샤프 0 근처, 앞·뒤 절반 뒤집힘. 앱에 더하면 12개 모두 기각.
+- **거래량까지 본 조정 돌파 (11-10, 바이낸스 현물 2017-08~, 447번)**: 추세 뒤 조정(지그재그·플랫·삼각형)이 끝나고 범위를 처음 벗어나는 봉.
+  추세 쪽으로 돌파한 비율 43% — 무작위 44%와 같음 (플랫 61% vs 64%, 지그재그 35% vs 36%) → **모양으로 방향은 못 맞힘**.
+  하지만 '조정 동안 거래량이 줄고(뒤 절반/앞 절반 < 0.85) 돌파 봉 거래량이 1.5배 이상'인 117번은 돌파 쪽으로 7일 평균 +0.54σ(+2.3%), 무작위 +0.01 (p=0.00), BTC·ETH·앞뒤 절반 모두 + · 거래량 확인 없는 330번은 +0.13σ(우연 범위).
+  맞은 비율은 39~57%라 평균은 가끔 크게 가는 쪽에서 나옴. 앱 크기에 넣으면 바이낸스 1.62→1.69 · 비트겟 1.80→1.77 → 기각 (추세 신호가 이미 그 돌파를 타고 있음).
+- 이전 시험: 삼각형·박스·깃발 돌파(4H 5년) 적중 48~52%, 대칭삼각형 아래 돌파는 오히려 반대(35%) · 변동성 수축(볼린저 폭 하위 20%) 뒤 변동성은 1.2배로 커지지만 첫 돌파 방향은 46~48%.
 
 **④ 경우의 수 엔진 — 꼭짓점이 확인된 순간 국면별로 다음 파동이 직전 꼭짓점을 넘을 확률 (중파동)**
 
