@@ -33,6 +33,7 @@ with st.expander("△ 설정", expanded=False):
     shape_on = st.checkbox("두 달 모양 반반 운용 (실험) — 4시간 방식 절반 + 일봉 60일 모양 절반을 한 수량으로 합침", False, key="shape_on")
     trap_on = st.checkbox("베어트랩 추가 (엄격 기준 통과 · 설정값 민감) — 직전 저점을 깼다가 3봉 안에 되돌아오면 24시간 롱 추가", False, key="trap_on")
     flow_on = st.checkbox("돈의 흐름 주머니 (기본·권장) — 테더·코인베이스 프리미엄이 높으면 롱 쪽, 낮으면 숏 쪽으로 최대 변동성 목표의 ½ 추가 · 비트겟 2022-08~ 샤프 1.77→1.95", True, key="flow_on")
+    ex_on = st.checkbox("거래소 순유출 주머니 (시험 · 엄격 기준 미달) — 최근 30일 코인이 거래소에서 빠져나가면 롱 쪽, 들어오면 숏 쪽으로 변동성 목표의 ¼ 추가 · 비트겟 2022-08~ 샤프 2.15→2.23 (½이면 2.30), 바이낸스 2018~22 1.50→1.71", False, key="ex_on")
     trail_on = st.checkbox("추적 부분익절 (기본·권장) — 방향 시작 뒤 유리하게 2ATR 이상 갔다가 최고점에서 2ATR 되돌리면 절반 익절 · 비트겟 2022-08~ 샤프 1.95→2.15, 낙폭 −16%→−12% (같은 배율이면 연 수익은 조금 줄고, 같은 낙폭이면 성장 ↑)", True, key="trail_on")
     wave_on = st.checkbox("파동 국면 크기 (기본·권장) — 중파동이 높은 저점(2파)·4파 확인 뒤 새로 시작하면 그 방향 1.5배·반대 ½ · 11년 샤프 1.89→2.04, 비트겟 5년 1.36→1.55", True, key="wave_on")
     mode = st.radio("매매 방식 (하나만 고르기 — 둘은 보는 기간이 달라 서로 다른 말을 할 수 있음)",
@@ -61,6 +62,23 @@ with st.expander("△ 설정", expanded=False):
             _qp.update(_new)
         except Exception:
             pass
+    st.markdown("**수익판** — 이 날부터 앱대로 했다면")
+    _c2 = st.columns(3)
+    _today = pd.Timestamp.now(tz="Asia/Seoul").normalize()
+    try:
+        _sd0 = pd.Timestamp(_qp.get("sd")).date() if _qp.get("sd") else (_today - pd.Timedelta(days=30)).date()
+    except Exception:
+        _sd0 = (_today - pd.Timedelta(days=30)).date()
+    _sdmin = (_today - pd.Timedelta(days=170)).date()
+    s_date = _c2[0].date_input("시작일 (최근 170일 안)", max(_sd0, _sdmin), min_value=_sdmin, max_value=_today.date(), key="s_date")
+    s_cap = _c2[1].number_input("시작 자본 (USDT)", 1.0, 10_000_000.0, (_qf("sc") or float(equity)), 10.0, key="s_cap")
+    s_mon = _c2[2].number_input("매달 추가 입금 (USDT)", 0.0, 1_000_000.0, (_qf("sm") if _qp.get("sm") is not None else 70.0), 10.0, key="s_mon")
+    _new2 = {"sd": str(s_date), "sc": f"{s_cap:g}", "sm": f"{s_mon:g}"}
+    if any(_qp.get(k_) != v_ for k_, v_ in _new2.items()):
+        try:
+            _qp.update(_new2)
+        except Exception:
+            pass
 SWING = mode.startswith("스윙")
 MAKER = order.startswith("지정가")
 MTF = bool(mtf_on)
@@ -69,6 +87,7 @@ TRAP = bool(trap_on) and not SWING
 WAVE = bool(wave_on) and not SWING
 FLOW = bool(flow_on) and not SWING
 TRAIL = bool(trail_on) and not SWING
+EXCH = bool(ex_on) and not SWING
 WP = False   # 횡보면 ½: 11년 확인(2015~2021 처음 보는 기간)에서 나빠져 옵션 삭제 (cosmos.py · macro.py)
 
 
@@ -330,7 +349,7 @@ if errs:
 _alt = {COINS[s]: rows[s][1].get("src", "") for s in rows if not str(rows[s][1].get("src", "Bitget")).startswith("Bitget")}
 if _alt:
     st.caption("시세 대체 · " + " · ".join(f"{k} {v_.split(' (')[0]}" for k, v_ in _alt.items()) + " (비트겟 막힘)")
-tab_trade, tab_info = st.tabs(["△ 매매", "△ 근거·검증"])
+tab_trade, tab_gain, tab_info = st.tabs(["△ 매매", "△ 내 수익", "△ 근거·검증"])
 tab_info.markdown("**△ 참고 지표**")
 
 @st.cache_data(ttl=3600, show_spinner="일봉(거시) 읽는 중…")
@@ -371,6 +390,19 @@ if FLW:
     _sc = np.mean([FLW[c]["score"] for c in ("BTC", "ETH")])
     tab_info.caption(f"돈의 흐름 {FLv.label(_sc)} · 테더 {FLW['usdt']:.4f} ({FLW['usdt_z']:+.1f}σ) · 코인베이스 프리미엄 BTC {FLW['BTC']['prem3']:+.2%} ({FLW['BTC']['prem_z']:+.1f}σ) · "
                f"ETH {FLW['ETH']['prem3']:+.2%} ({FLW['ETH']['prem_z']:+.1f}σ)" + (" — 크기에 반영" if FLOW else " — 설정에서 꺼짐"))
+@st.cache_data(ttl=6 * 3600, show_spinner="거래소 입출금 읽는 중…")
+def load_onchain():
+    import onchain_live as OCv
+    return OCv.state()
+
+
+try:
+    OCH = load_onchain()
+except Exception:
+    OCH = None
+if OCH:
+    tab_info.caption("거래소 30일 입출금(유통량 대비) · " + " · ".join(f"{c_} {'순유출' if OCH[c_]['pct30'] < 0 else '순입금'} {abs(OCH[c_]['pct30']):.2f}% ({OCH[c_]['z']:+.1f}σ)" for c_ in ("BTC", "ETH"))
+                     + f" · {OCH['BTC']['t']} 기준" + (" — 크기에 반영" if EXCH else " — 표시만 (설정에서 켤 수 있음)"))
 _fg = fear_greed()
 _top = []
 if any(MAC.values()):
@@ -382,6 +414,8 @@ if _top:
     tab_info.caption(" │ ".join(_top) + " — 참고 (매매엔 안 씀)")
 # 배지 색: (배경, 테두리, 왼쪽 강조선·글자색, 표시) — 은은한 바탕 + 진한 글자
 BADGE = {"롱": ("#f0f8f3", "#d3eadb", "#1f7a45", "롱 ▲"), "숏": ("#fcf2f2", "#f1d4d4", "#b23b3b", "숏 ▼"), "관망": ("#f5f6f8", "#e3e6ea", "#5b6270", "관망 ―")}
+top_box = tab_trade.container()
+SUMM = []
 badge_cols = tab_trade.columns(len(COINS))
 exp_box = tab_trade.container(); detail_box = tab_trade.container()
 try:
@@ -401,6 +435,20 @@ try:
         TOPDOWN = json.load(_fh)["table"]
 except Exception:
     TOPDOWN = {}
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def funding_rate(sym: str):
+    """지금 8시간 펀딩비 (비트겟, 막히면 OKX). +면 롱이 숏에게 냄."""
+    import requests
+    try:
+        d = requests.get("https://api.bitget.com/api/v2/mix/market/current-fund-rate", params={"symbol": sym, "productType": "usdt-futures"}, timeout=10).json()["data"][0]
+        return float(d["fundingRate"])
+    except Exception:
+        try:
+            return float(requests.get("https://www.okx.com/api/v5/public/funding-rate", params={"instId": sym.replace("USDT", "-USDT-SWAP")}, timeout=10).json()["data"][0]["fundingRate"])
+        except Exception:
+            return None
 
 
 def chip(t, tone=0):
@@ -442,7 +490,8 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
             st.warning(f"{nm} 일봉 모양 오류: {e} — 4시간 방식만 사용")
     sp0 = 0.5 * sv["pos"] if sv else 0.0
     fl = (__import__("flow_live").W * FLW[nm]["s"] * v.get("cap", 0.0)) if (FLOW and FLW and nm in FLW) else 0.0   # 돈의 흐름 주머니
-    sp = sp0 + fl
+    exs = (__import__("onchain_live").W * OCH[nm]["s"] * v.get("cap", 0.0)) if (EXCH and OCH and nm in OCH) else 0.0   # 거래소 순유출 주머니 (시험)
+    sp = sp0 + fl + exs
     wt = 0.5 if sv else 1.0
     tr_ = v.get("trap") or {}
     tp = tr_.get("active", 0.0) * tr_.get("cap", 0.0) if TRAP else 0.0                 # 지금 베어트랩 몫
@@ -567,6 +616,9 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         mood += ("<br>" if mood else "") + _txt
         chips += chip(f"파동 {_lab}" + (f" → {'롱' if wv['dir'] > 0 else '숏'} 1.5배" if (wv.get("active") and WAVE) else ""), wv["dir"] if wv.get("active") else 0)
     case = ""
+    if OCH and nm in OCH:
+        _oz = OCH[nm]["z"]
+        chips += chip(f"거래소 30일 {'순유출' if OCH[nm]['pct30'] < 0 else '순입금'} {_oz:+.1f}σ" + (f" → {'롱' if exs > 0 else '숏'} 쪽 +{abs(k * exs):,.0f}" if (EXCH and abs(k * exs) >= 0.5) else ""), _oz if abs(_oz) >= 0.5 else 0)
     if FLW and nm in FLW:
         import flow_live as FLv
         _sc = FLW[nm]["score"]
@@ -579,6 +631,10 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
                 _tier, _col = ("높음", "#15803d") if _ag >= 1 else (("낮음", "#b91c1c") if _ag <= -1 else ("보통", "#4b5563"))
                 case = (f"<span style='display:inline-block;border:1px solid {_col}55;color:{_col};border-radius:10px;padding:1px 8px;font-size:0.8rem;font-weight:700'>신뢰도 {_tier}</span>"
                         f"<span style='font-size:0.78rem;color:#4b5563'> 과거 같은 경우({side} + {_key.split(' (')[0]}) 7일 뒤 이 포지션 맞음 {_c['hit']:.0%} · 평균 {_c['mean']:+.1%}</span>")
+    _fr = funding_rate(sym)
+    if _fr is not None and has:
+        _pay = np.sign(q_now) * _fr > 0; _day = abs(_fr) * 3 * abs(q_now) * last
+        chips += chip(f"펀딩 {_fr * 100:+.4f}%/8h · {side} {'냄' if _pay else '받음'} 하루 약 {_day:.2f} USDT" + (" · 과열" if abs(_fr) >= 0.0005 else ""), (-1 if _pay else 1) if (abs(_fr) >= 0.0005 or _day >= 0.01) else 0)
     if DOM:
         import dominance_live as DL
         mood += "<br>" if mood else ""
@@ -588,6 +644,13 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         else:
             mood += (f"TOTAL3 7일 {DL.label(DOM['t3_z7'])}({DOM['t3_z7']:+.1f}σ) · 30일 {DL.label(DOM['t3_z30'])}({DOM['t3_z30']:+.1f}σ) · 알트 비중 {DL.arrow(DOM['alt_tr'])}"
                      if "t3_z7" in DOM else f"TOTAL3 {DL.arrow(DOM['t3_tr'])} · 알트 비중 {DL.arrow(DOM['alt_tr'])}")
+    _pn_now = (np.sign(q_now) * (last / e_now - 1)) if (has and e_now and e_src != "지금 가격") else None
+    SUMM.append({"nm": nm, "side": side, "has": has, "pnl": _pn_now, "kind": kind, "txt": ktxt, "next": next_t, "line": lines[0] if lines else ""})
+    if kind in ("익절", "부분익절"):
+        _tk = f"toast_{sym}_{close_t:%m%d%H}"
+        if not st.session_state.get(_tk):
+            st.session_state[_tk] = True
+            st.toast(f"{nm} {kind} — {ktxt}. 규칙대로 수익을 챙길 차례입니다.")
     with badge_cols[i_c]:
         st.markdown(badge(nm, f"${last:,.{pf}f}", word, strength, qline, action, sub, lines, next_t, chips, case, entry, hold), unsafe_allow_html=True)
     if mood:
@@ -659,6 +722,39 @@ try:
 except Exception:
     pass
 
+with tab_info.expander("△ 수익 재검토 3차 — 온체인·거시 재료 28개와 목표 계획 (11-17)", expanded=False):
+    st.markdown("""
+**① 아직 안 써 본 재료 28개** — 온체인(활성 주소·거래 수·MVRV·거래소 입출금·해시레이트), 거시(나스닥·VIX·금리·달러·순유동성·신용 스프레드), 공포탐욕.
+판정은 전과 같음: 1주·3주 뒤 수익과의 순위상관, 과거 수익을 뺀 부분 상관, 시간 어긋낸 우주 p, BTC·ETH와 앞뒤 절반이 같은 부호인지.
+
+| 재료 | 1주 상관 | p | 판정 |
+|---|---|---|---|
+| 거래소 순입금 7일·30일 (코인이 거래소로 들어옴) | −0.09 · −0.07 | 0.00 · 0.03 | 두 코인·앞뒤 모두 같은 부호 → 새 정보 |
+| 장단기 금리차 (10년−2년) | +0.11 | 0.00 | 통과하지만 9년에 큰 굴곡 몇 번뿐인 느린 값 |
+| MVRV 30일 변화 · 가격−활성주소 | +0.08 · +0.09 | 0.03 · 0.01 | 과거 수익을 빼면 0 → 추세의 다른 표현 |
+| 나스닥·VIX·달러·실질금리·순유동성·활성 주소·거래 수·공포탐욕 | −0.03~+0.05 | 0.2~0.9 | 우연 범위 |
+
+**② 주머니로 넣어 보면** (지금 기본 = 흐름 주머니 + 추적 부분익절 위에)
+- 거래소 30일 순유출 ×½: 바이낸스 2018-06~2022-07 샤프 1.50→1.92 (우주 p=0.00) · 비트겟 2022-08~ 2.15→2.30, 연 +47%→+55%, 낙폭 −12% 그대로 (p=0.03). 주머니 단독은 BTC·ETH 9년 중 8년이 +.
+- 그러나 창을 14·21·45·60·90일로 바꾸면 비트겟에선 −0.02~+0.04, BTC 단독은 1.93→1.88 → **엄격 기준 미달**. 과거 온체인 자료는 거래소 주소가 나중에 보정된 값이라 실시간보다 좋게 보일 수 있음.
+- 장단기 금리차 ×½: 2.15→2.28이지만 최근 1년 1.71→1.26 · 2026년 손실 → 넣지 않음. 달러 60일: +0.06.
+- 고르는 절차까지 검증(매 분기 그때까지 자료로만 재료 선택): 앱 위에 +0.11, 지금 기본 위에 ×¼ +0.06 · ×½ −0.06 → **새 재료의 실제 몫은 샤프 +0.05 안팎**.
+- 결론: 카드에 '거래소 30일 순유출/순입금' 칩으로 **표시**, 크기 반영은 설정의 시험 옵션(×¼, 기본 끔).
+
+**③ 목표까지 — 수익을 좌우하는 건 재료가 아니라 배율과 '검증 성적이 실전에서 얼마나 남느냐'** (내 수익 탭 '목표 계획')
+- 지금 기본의 4시간 손익을 한 달 덩어리로 다시 뽑아 2032년 말까지 4,000번 (시작 164 USDT + 매달 70):
+
+| 배율 | 과거 그대로: 중앙 · 50억 확률 | 수익 절반: 중앙 | 우위 없음: 중앙 | 도중 낙폭 (보통 → 절반 세계) |
+|---|---|---|---|---|
+| ×1.5 | 0.7억 · 0% | 0.19억 | 0.07억 | −20% → −28% |
+| ×2 | 1.5억 · 0% | 0.25억 | 0.06억 | −27% → −38% |
+| ×3 | 7.7억 · 10% | 0.44억 | 0.05억 | −40% → −55% |
+| ×4 | 36억 · 43% | 0.68억 | 0.04억 | −51% → −69% |
+| ×6 | 530억 · 80% | 1.15억 | 0.03억 | −69% → −85% |
+
+- 넣는 돈 합계는 약 730만원. 50억은 '검증 성적이 그대로 이어지고 + 배율 4 이상 + −50~−70% 낙폭을 버팀'이 모두 맞아야 나옴. 수익이 절반만 나오면 어떤 배율도 50억은 1~8%.
+- 시험한 배율 규칙: 입금 반영 배율(자산이 작을 때만 높게) → 같은 낙폭의 고정 배율과 거의 같음. 성적 확인 뒤 한 칸씩 올리는 사다리 → 좋은 세계에서 ×4의 절반(18억), 나쁜 세계에선 ×2와 비슷하지만 낙폭은 더 큼 → 고정 ×3보다 낫지 않음. 둘 다 채택 안 함.
+""")
 with tab_info.expander("△ 재분석 — 가격 모양 말고 '돈이 실제로 들어오나' (BTC·ETH, 11-09)", expanded=False):
     st.markdown("""
 **왜 다시 봤나**: 지금까지의 분석(추세·호흡·파동·패턴·거시·지배력·우주 리듬·심리)은 모두 **같은 4시간 가격**에서 뽑은 값이었고, 결국 '추세 추종 하나'로 수렴함.
@@ -725,6 +821,9 @@ with tab_info.expander("△ 재분석 — 가격 모양 말고 '돈이 실제로
 | 하루 성장 (비트겟, 낙폭 −50% 근처) | 배율 4: 0.39% (−51%) | 배율 5: **0.44%** (−50%) |
 
   이웃: 1.5·2.5ATR, 남기는 몫 ⅓·⅔ 모두 비슷하게 좋아짐. 같은 배율이면 연 수익은 줄고 낙폭이 더 크게 줄어듦 → **같은 낙폭이면 배율을 한 단계 올릴 수 있음** (1.5 대신 2가 예전 1.5와 같은 낙폭).
+- **펀딩비 (11-16 확인)**: 앱은 거의 늘 포지션이 있지만 롱 ~55%·숏 ~45%로 갈리고 평균 크기는 자본의 ⅓ 안팎. 펀딩이 +일 때 롱은 내고 숏은 받아 상쇄됨.
+  실제 8시간 펀딩 기록(바이낸스)으로 다시 계산: 비트겟 2022-08~ 배율 1.5에서 연 −1% 안팎 (연 +81% → +79%, 샤프 2.19 → 2.16) · 2020~21 과열장은 연 −4~−6%.
+  지금까지 모든 검증은 '롱만 연 10% 냄, 숏은 못 받음'으로 더 불리하게 계산해 왔음 → 실제 펀딩이 가정보다 조금 덜 깎음. 카드에 지금 펀딩과 하루 금액 표시.
 - 카드의 말: **진입 · 추가 · 부분익절 · 부분손절 · 익절 · 손절 · 뒤집기 · 유지 · 관망**. 익절/손절은 평단(앱이 그 방향을 시작한 마감가, 또는 설정에서 넣은 내 평단) 대비 그 가격에서 수익이냐 손실이냐로 가름.
 
 **④ 경우의 수 재검토 (2차, 11-09 오후) — 더 나은 길이 있나**
@@ -1051,6 +1150,129 @@ with tab_info.expander("△ 검증 성적 (5년, 과장 없이)", expanded=False
 | 150배 · 증거금 2% | 파산 | — | 0.21% 역행에 청산, 청산율 77~94% |
 """)
     st.caption("한계: 펀딩비는 맨 위 줄 비고만 반영, 미래에도 같다는 보장 없음, 하루 1% 복리 수준과는 거리가 멂. 소액일 때는 실제 주문 전 일지에 모의로 먼저 기록 권장.")
+
+# 매매 탭 맨 위: 오늘 한 줄
+if SUMM:
+    _todo = [x for x in SUMM if x["kind"] not in ("유지", "관망")]
+    _bits = []
+    for x in SUMM:
+        if x["has"] and x["pnl"] is not None:
+            _bits.append(f"{x['nm']} {x['side']} <b style='color:{'#15803d' if x['pnl'] >= 0 else '#b91c1c'}'>{x['pnl']:+.1%}</b>")
+        elif x["has"]: _bits.append(f"{x['nm']} {x['side']} 새로 시작")
+        else: _bits.append(f"{x['nm']} 관망")
+    _head = ("<b>할 일 있음</b> · " + " · ".join(f"{x['nm']} {x['kind']}" for x in _todo)) if _todo else "<b>지금 할 일 없음</b> · 들고 기다리면 됩니다"
+    top_box.markdown(f'<div style="padding:9px 12px;border-radius:10px;background:{"#fff7e6" if _todo else "#f1f7f3"};border:1px solid {"#f3d29b" if _todo else "#cfe5d7"};'
+                     f'font-size:0.92rem;color:#1f2937;margin-bottom:10px">{_head} │ {" · ".join(_bits)} │ 다음 확인 {SUMM[0]["next"]:%H:%M}</div>', unsafe_allow_html=True)
+
+
+@st.cache_data(ttl=600, show_spinner="수익판 계산 중…")
+def load_pos(sym, last_time, flags):
+    import score_live as SC
+    df = data.drop_unclosed(data.fetch_candles(sym, "4H", 1600), "4H")
+    try:
+        fl = load_flow()
+        ser = fl[COINS[sym]]["series"] if (fl and flags[2]) else None
+    except Exception:
+        ser = None
+    try:
+        exz = load_onchain()[COINS[sym]]["series"] if flags[4] else None
+    except Exception:
+        exz = None
+    return SC.positions(df, ser, *flags[:4], ex=exz)
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def krw_rate():
+    import requests
+    try:
+        return float(requests.get("https://api.upbit.com/v1/ticker", params={"markets": "KRW-USDT"}, timeout=10).json()[0]["trade_price"])
+    except Exception:
+        return 1400.0
+
+
+with tab_gain:
+    try:
+        import score_live as SC
+        _flags = (MTF, WAVE, FLOW, TRAIL, EXCH)
+        P_ = {COINS[s_]: load_pos(s_, str(rows[s_][0].index[-1]), _flags) for s_ in COINS if s_ in rows}
+        curve, TR = SC.simulate(P_, pd.Timestamp(s_date).tz_localize("Asia/Seoul").tz_convert("UTC"), float(s_cap), float(s_mon), float(mult))
+        if curve.empty:
+            st.info("시작일이 너무 최근입니다 — 하루 이상 지난 날을 고르세요.")
+        else:
+            krw = krw_rate()
+            dep = float(s_cap) + float(s_mon) * (len(set(curve.index.tz_convert("Asia/Seoul").to_period("M"))) - 1)
+            now_e = float(curve.iloc[-1]); prof = now_e - dep
+            wk0 = pd.Timestamp.now(tz="Asia/Seoul").normalize() - pd.Timedelta(days=pd.Timestamp.now(tz="Asia/Seoul").dayofweek)
+            _cw = curve[curve.index >= wk0.tz_convert("UTC")]
+            wk = float(curve.iloc[-1] - (_cw.iloc[0] if len(_cw) else curve.iloc[-1]))
+            st.caption(f"{s_date} 부터 앱 카드대로 (배율 {mult}, 지정가, 롱 펀딩 연 10% 가정) 했다면 · 소수점 수량으로 계산 — 실제 최소 단위 때문에 조금 다를 수 있음")
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("지금 자산", f"{now_e:,.1f} USDT", f"약 {now_e * krw / 1e4:,.0f}만원", delta_color="off")
+            m2.metric("넣은 돈", f"{dep:,.0f} USDT", f"시작 {s_cap:,.0f} + 매달 {s_mon:,.0f}", delta_color="off")
+            m3.metric("순이익", f"{prof:+,.1f} USDT", f"{prof / dep:+.1%}")
+            m4.metric("이번 주", f"{wk:+,.1f} USDT", f"{wk / max(now_e - wk, 1e-9):+.1%}")
+            depl = pd.Series([float(s_cap) + float(s_mon) * (len(set(curve.index[:i + 1].tz_convert("Asia/Seoul").to_period("M"))) - 1) for i in range(len(curve))], index=curve.index)
+            fig = go.Figure()
+            fig.add_trace(go.Scatter(x=curve.index.tz_convert("Asia/Seoul"), y=depl, name="넣은 돈", line=dict(color="#9ca3af", width=1.5, dash="dot")))
+            fig.add_trace(go.Scatter(x=curve.index.tz_convert("Asia/Seoul"), y=curve, name="자산", line=dict(color="#2563eb", width=2.4), fill="tonexty", fillcolor="rgba(37,99,235,0.08)"))
+            fig.update_layout(height=280, margin=dict(l=10, r=10, t=10, b=10), legend=dict(orientation="h", y=1.08, x=0), yaxis_title="USDT", plot_bgcolor="white")
+            st.plotly_chart(fig, width="stretch", key="gain_curve")
+            if not TR.empty:
+                done = TR[TR["결과"] != "진행 중"]; wins = done[done["결과"] == "익절"]; loss = done[done["결과"] == "손절"]
+                if len(done):
+                    st.markdown(f"**끝난 거래 {len(done)}번** · 익절 {len(wins)} · 손절 {len(loss)} · 본전 {(done['결과'] == '본전').sum()} · "
+                                f"평균 익절 <span style='color:#15803d'>{wins['손익'].mean() if len(wins) else 0:+.2f}</span> USDT vs 평균 손절 <span style='color:#b91c1c'>{loss['손익'].mean() if len(loss) else 0:+.2f}</span> USDT"
+                                + (f" · 가장 큰 익절 {wins['손익'].max():+.2f} ({wins.loc[wins['손익'].idxmax(), '코인']} {wins.loc[wins['손익'].idxmax(), '방향']})" if len(wins) else ""),
+                                unsafe_allow_html=True)
+                    st.caption("손절이 더 자주 나와도 정상입니다 — 이 방식은 '작게 자주 지고, 가끔 크게 이기는' 구조 (11년 기준 맞는 비율 26~50%).")
+                kst = lambda t_: "" if pd.isna(t_) else pd.Timestamp(t_).tz_convert("Asia/Seoul").strftime("%m-%d %H시")
+                show = pd.DataFrame({"거래": [f"{c_} {d_} · {kst(a_)}~{kst(b_) or '지금'}" for c_, d_, a_, b_ in zip(TR["코인"], TR["방향"], TR["시작"], TR["끝"])],
+                                     "결과": [f"{r_} {g_:+.2f}" + (" · 부분익절" if pt_ else "") for r_, g_, pt_ in zip(TR["결과"], TR["손익"], TR["부분익절"])],
+                                     "가격": [f"{a_:,.0f}→{b_:,.0f}" for a_, b_ in zip(TR["진입가"], TR["청산가"])]}).head(15)
+                st.dataframe(show, hide_index=True, width="stretch")
+            # 다음 목표
+            try:
+                with open(STATE / ("certainty_flow.json" if (MTF and WAVE and FLOW) else ("certainty_wave.json" if (MTF and WAVE) else ("certainty_mtf.json" if MTF else "certainty.json"))), encoding="utf-8") as _fh:
+                    _ct = json.load(_fh)["table"].get(f"{'maker' if MAKER else 'taker'}|{float(mult)}")
+                g_med, g_low = (_ct["1년"]["med"], max(_ct["1년"]["p10"], 0.0)) if _ct else (0.4, 0.0)
+            except Exception:
+                g_med, g_low = 0.4, 0.0
+            MS = SC.milestones(now_e, krw, float(s_mon), g_med, g_low)
+            if MS:
+                now_m = pd.Timestamp.now(tz="Asia/Seoul")
+                fmt_k = lambda x: f"{x / 1e8:g}억" if x >= 1e8 else f"{x / 1e4:,.0f}만"
+                fmt_m = lambda m_: "—" if m_ is None else (now_m + pd.DateOffset(months=int(m_))).strftime("%Y-%m") + f" ({m_}개월)"
+                st.markdown("**△ 다음 목표까지** (매달 입금 포함, 지금 배율의 과거 1년 성적 기준)")
+                st.dataframe(pd.DataFrame({"목표": [fmt_k(r_["목표"]) + "원" for r_ in MS], "보통이면": [fmt_m(r_["중앙"]) for r_ in MS], "나쁜 해가 이어지면": [fmt_m(r_["보수"]) for r_ in MS]}).head(7), hide_index=True, width="stretch")
+                st.caption(f"보통 = 연 {g_med:+.0%}, 나쁜 해 = 연 {g_low:+.0%} (그보다 나쁘면 입금만 쌓임). 과거 성적이라 앞으로를 약속하지 않습니다 — 그래도 큰 목표보다 바로 다음 칸을 보는 게 오래 갑니다.")
+            try:
+                import plan_live as PLv
+                st.markdown("**△ 목표 계획 — 배율별 경우의 수** (지금 자산·매달 입금으로 목표 시점까지 3,000번 다시 돌려 본 결과)")
+                g1, g2 = st.columns(2)
+                _goal = g1.selectbox("목표 금액", ["1억원", "10억원", "50억원"], index=2, key="plan_goal")
+                _year = g2.selectbox("목표 시점 (그해 12월)", [2028, 2029, 2030, 2031, 2032, 2033, 2034], index=4, key="plan_year")
+                _gk = {"1억원": 1e8, "10억원": 1e9, "50억원": 5e9}[_goal]
+                _nowk = pd.Timestamp.now(tz="Asia/Seoul"); _mo = max((int(_year) - _nowk.year) * 12 + 12 - _nowk.month, 1)
+                _ml = sorted(set([1.5, 2.0, 3.0, 4.0, 5.0] + [float(mult)]))
+                PT = st.cache_data(ttl=3600, show_spinner="목표 계획 계산 중…")(PLv.table)(str(STATE / "plan_base.json"), round(now_e, 0), float(s_mon), int(_mo), tuple(_ml), _gk / krw)
+                fk = lambda u_: (f"{u_ * krw / 1e8:,.1f}억" if u_ * krw >= 1e8 else f"{u_ * krw / 1e4:,.0f}만")
+                st.dataframe(pd.DataFrame({"배율": [("▶ " if r_["배율"] == float(mult) else "") + f"×{r_['배율']:g}" for r_ in PT],
+                                           "과거 그대로면": [f"{fk(r_['그대로']['med'])} · 달성 {r_['그대로']['p']:.0%}" for r_ in PT],
+                                           "절반만 나오면": [f"{fk(r_['절반']['med'])} · 달성 {r_['절반']['p']:.0%}" for r_ in PT],
+                                           "안 통하면": [fk(r_["없음"]["med"]) for r_ in PT],
+                                           "도중 낙폭 (보통~나쁨)": [f"{r_['그대로']['dd']:.0%} ~ {r_['절반']['dd10']:.0%}" for r_ in PT]}), hide_index=True, width="stretch")
+                st.caption(f"지금 {now_e:,.0f} USDT + 매달 {s_mon:,.0f} USDT · {_mo}달 동안 · 지금 자산과 앞으로 넣을 돈을 합치면 약 {(now_e + s_mon * _mo) * krw / 1e4:,.0f}만원 · 금액은 중앙값(절반은 그보다 아래). "
+                           "'과거 그대로' = 비트겟 2022-08~ 검증 성적이 계속됨(가장 낙관적), '절반' = 평균 수익이 절반(검증 성적은 보통 실전에서 깎임), '안 통하면' = 우위 없음. "
+                           "낙폭은 월말 기준이라 실제 도중엔 더 깊을 수 있음. 배율을 올리면 목표 확률과 낙폭이 함께 커지고, 안 통하는 세계에서는 더 빨리 잃습니다.")
+            except Exception as e_:
+                st.caption(f"목표 계획 계산 오류: {e_}")
+            st.markdown("""**△ 즐겁게 오래 하는 법**
+- **수익은 주·월 단위로 보기** — 4시간마다 보면 절반은 손실이라 지칩니다. 카드는 할 일만 확인하고, 이 탭은 일요일 저녁에 한 번.
+- **손절 날은 '규칙을 지킨 날'** — 작게 잃는 게 이 방식의 정상 운영이고, 큰 익절은 그걸 버틴 사람에게만 옵니다.
+- **익절이 나오면 일부는 기념으로 현물·저축으로 옮기기** — 수익이 '숫자'가 아니라 '내 것'이 되는 느낌이 오래 하게 만듭니다.
+- **배율은 낙폭을 견딜 만큼만** — 잠을 설치는 배율이면 즐거움이 먼저 사라집니다.""")
+    except Exception as e:
+        st.warning(f"수익판 계산 오류: {e}")
 
 render_journal(tab_trade)
 if not errs:
