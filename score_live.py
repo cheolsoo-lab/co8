@@ -2,6 +2,7 @@
 앱 기본 그대로 다시 계산: 추세+호흡 → 흐름 정렬 역가중 → 파동 국면 → 돈의 흐름 주머니 → 추적 부분익절.
 비용: 지정가 0.03% · 롱 펀딩 연 10%(보수적 가정). 수량은 소수점까지 계산(실제 최소 단위 때문에 조금 다를 수 있음)."""
 from __future__ import annotations
+import robust_live as RL
 import numpy as np, pandas as pd
 import indicators as ta, novel as N, robust as RB, mtf as MT, patterns2 as P2, wave_live as WL, trade_live as TL
 
@@ -10,7 +11,7 @@ FEE, FUND = 0.0003, 0.10 / (6 * 365)
 
 def positions(df: pd.DataFrame, flow6: pd.Series | None, mtf_on=True, wave_on=True, flow_on=True, trail_on=True, ex: pd.Series | None = None) -> pd.DataFrame:
     idx = df.index; c = df["close"].to_numpy(float); n = len(c); r = np.concatenate([[0.0], np.diff(np.log(c))])
-    sg = N.sigma(r); cap = np.minimum(N.TV / sg, N.LMAX); d = 0.5 * RB.tsmom_dir(r) + 0.5 * RB.breath_dir(r); base = N.band(d * cap, 0.15)
+    sg = N.sigma(r); cap = np.minimum(N.TV / sg, N.LMAX); d = 0.5 * RB.tsmom_dir(r) + 0.5 * RB.breath_dir(r); base = N.band(d * cap, RL.BAND)
     p = base.copy()
     if mtf_on:
         dD, _ = MT.tf_signal(ta.resample_ohlcv(df, "1D"), (5, 10, 20, 40, 60), (2, 3, 4), (3, 5, 10))

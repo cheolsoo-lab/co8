@@ -1,7 +1,7 @@
 """'고르지 않고 평균' 방식의 현재 상태.  python robust_live.py
 규칙(전부 미리 고정, 코인별 튜닝 없음):
   방향 = 0.5 × TSMOM(7·14·30·60·90일 수익 부호 평균) + 0.5 × 호흡(같은 방향 4H 봉 k=3~6개 뒤 h=12·24·48봉 추종 평균)
-  크기 = 방향 × min(연변동성 40% 타깃 / 현재 변동성, 3배) → 작은 변화는 무시(0.15)
+  크기 = 방향 × min(연변동성 40% 타깃 / 현재 변동성, 3배) → 작은 변화는 무시(0.175)
   24개 코인 동일 비중(1/24). 코인 하나가 포트폴리오에서 차지하는 명목 = 자본 × 배율 × 크기 / 24."""
 import numpy as np, pandas as pd
 import data, novel as N, robust as RB
@@ -10,6 +10,7 @@ UNIVERSE = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "XRPUSDT", "BNBUSDT", "DOGEUSDT", "
             "HYPEUSDT", "RENDERUSDT", "TAOUSDT", "FILUSDT", "GRASSUSDT", "TIAUSDT", "STXUSDT", "NEARUSDT", "ARBUSDT", "APTUSDT", "ONDOUSDT", "ZROUSDT"]
 BARS = 1000          # TSMOM 최장 540봉 + 변동성 안정화 여유
 DEAD = 0.15          # 판정 경계: |합성 방향| < 0.15 이면 관망
+BAND = 0.175         # 완충 폭: 목표 크기가 이만큼 넘게 달라질 때만 수량 변경 (11-17 조율: 0.15→0.175, 세 구간 모두 +0.11~+0.16 · 주문 7% 감소)
 
 
 def one(df: pd.DataFrame) -> dict:
@@ -17,7 +18,7 @@ def one(df: pd.DataFrame) -> dict:
     sg = N.sigma(r); cap = np.minimum(N.TV / sg, N.LMAX)
     d1, d2 = RB.tsmom_dir(r), RB.breath_dir(r)
     d = 0.5 * d1 + 0.5 * d2
-    pos = N.band(d * cap, 0.15)
+    pos = N.band(d * cap, BAND)
     return {"close": float(c[-1]), "tsmom": float(d1[-1]), "breath": float(d2[-1]), "dir": float(d[-1]),
             "pos": float(pos[-1]), "ann": float(sg[-1] * np.sqrt(6 * 365)), "n": len(c),
             "time": str(df.index[-1])}

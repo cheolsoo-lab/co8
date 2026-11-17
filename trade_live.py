@@ -5,6 +5,7 @@
   같은 배율이면 연 수익은 줄고(54%→47%) 낙폭이 더 크게 줄어듦 → 같은 낙폭이면 하루 성장 +0.03~0.05%p.
 - 따로 정한 부분손절(불리 1~3ATR → ½)은 모두 효과 없음 → 손절은 앱의 전환 가격이 맡음."""
 from __future__ import annotations
+import robust_live as RL
 import numpy as np, pandas as pd
 import indicators as ta, precision as PR, novel as N
 
@@ -14,7 +15,7 @@ TONE = {"진입": ("#1d4ed8", "#e8efff"), "추가": ("#1d4ed8", "#e8efff"), "부
 
 
 def trail_state(df: pd.DataFrame) -> dict:
-    F = PR.coin_frame(df); base = N.band(F["d"] * F["cap"], 0.15); c = df["close"].to_numpy(float); atr = ta.atr(df).to_numpy()
+    F = PR.coin_frame(df); base = N.band(F["d"] * F["cap"], RL.BAND); c = df["close"].to_numpy(float); atr = ta.atr(df).to_numpy()
     d = np.sign(base); n = len(d)
     if d[-1] == 0: return {"dir": 0}
     st = n - 1
