@@ -62,7 +62,8 @@ def state() -> dict:
         prem = (cb / sp.reindex(cb.index)).dropna() - 1; p3 = prem.rolling(12).mean(); pz = _z(p3)
         u = float(uz.reindex(pz.index).ffill().iloc[-1]); score = float(np.nanmean([pz.iloc[-1], u]))
         ser = pd.concat([pz, uz.reindex(pz.index).ffill()], axis=1).mean(axis=1, skipna=True).dropna()
-        out[coin] = {"prem3": float(p3.iloc[-1]), "prem_z": float(pz.iloc[-1]), "usdt_z": u, "score": score, "s": float(np.clip(score / 2, -1, 1)), "series": ser}
+        sg_ = np.sign(p3.dropna().to_numpy()[::-1]); run = int(np.argmax(sg_ != sg_[0])) if (sg_ != sg_[0]).any() else len(sg_)   # 같은 부호가 이어진 6시간 봉 수
+        out[coin] = {"neg_days": run / 4 if sg_[0] < 0 else 0.0, "pos_days": run / 4 if sg_[0] > 0 else 0.0, "prem3": float(p3.iloc[-1]), "prem_z": float(pz.iloc[-1]), "usdt_z": u, "score": score, "s": float(np.clip(score / 2, -1, 1)), "series": ser}
     return out
 
 
