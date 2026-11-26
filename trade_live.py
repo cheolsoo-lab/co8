@@ -61,8 +61,11 @@ def classify(ref: float, tgt: float, price: float, entry: float | None, step: fl
     return ("부분익절" if win else "부분손절"), f"{side(ref)} {f(abs(ref) - abs(tgt))} 정리{ptxt} → {f(tgt)} 남김"
 
 
+NAME = {"익절": "전부 익절", "손절": "전부 손절"}      # 화면에 보이는 이름 (부분익절·부분손절과 구분)
+
+
 def pill(kind: str, text: str, big: bool = False) -> str:
     fg, bg = TONE.get(kind, TONE["유지"])
     sz = "1.05rem" if big else "0.82rem"
     return (f'<span style="display:inline-block;background:{bg};color:{fg};border:1px solid {fg}33;border-radius:8px;padding:{"5px 10px" if big else "1px 7px"};'
-            f'font-size:{sz};font-weight:700;margin-right:6px">{kind}</span><span style="font-size:{sz};color:#1f2937;font-weight:{600 if big else 500}">{text}</span>')
+            f'font-size:{sz};font-weight:700;margin-right:6px">{NAME.get(kind, kind)}</span><span style="font-size:{sz};color:#1f2937;font-weight:{600 if big else 500}">{text}</span>')

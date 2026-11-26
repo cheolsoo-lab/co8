@@ -108,6 +108,11 @@ def load(symbol: str):
         v["er"] = CL.er_state(df); v["er_prev"] = CL.er_state(df.iloc[:-1])
     except Exception:
         v["er"] = v["er_prev"] = None
+    try:
+        import structure_live as STR
+        v["struct"] = STR.state(df)
+    except Exception:
+        v["struct"] = None
     v["pos_prev"] = RL.one(df.iloc[:-1])["pos"]
     try:
         import trade_live as TL0
@@ -207,9 +212,25 @@ def todo(cur: float, tgt: float, price: float, step: float, nm: str) -> str:
 def chart(df, v):
     fig = go.Figure(go.Candlestick(x=df.index.tz_convert("Asia/Seoul"), open=df["open"], high=df["high"], low=df["low"], close=df["close"],
                                    increasing_line_color="#2e9e5b", decreasing_line_color="#d64545", name=""))
-    for lv, nm, col in ((v["res"], "저항", "#d64545"), (v["sup"], "지지", "#2e9e5b")):
-        if np.isfinite(lv):
-            fig.add_hline(y=lv, line_dash="dot", line_color=col, annotation_text=f"{nm} {lv:,.1f}", annotation_position="top left")
+    stv = v.get("struct")
+    if stv:
+        lo_, hi_ = float(df["low"].min()), float(df["high"].max()); pad = 0.15 * (hi_ - lo_)
+        z0, z1 = stv["s3"]["zone"]
+        if stv["s3"]["r"] < 0.7: fig.add_hrect(y0=min(z0, z1), y1=max(z0, z1), fillcolor="#2e9e5b", opacity=0.08, line_width=0, annotation_text="받침 구역", annotation_position="top right")
+        _k = 0
+        for x in stv["levels"]:
+            if x["role"] != "방아쇠" or not (lo_ - pad <= x["price"] <= hi_ + pad): continue
+            strong = x["kind"] in ("origin", "pw", "eq", "extreme")
+            fig.add_hline(y=x["price"], line_dash="dash" if strong else "dot", line_width=1.6 if strong else 0.8, line_color="#b45309" if strong else "#9ca3af",
+                          annotation_text=f"{x['what'].split(' · ')[0].split(' (')[0]} {x['price']:,.1f}" if strong else "", annotation_position=("bottom left", "top right")[_k % 2])
+            _k += strong
+        for t in stv.get("trend_lines", []):
+            if t["x0"] >= df.index[0] and lo_ - pad <= t["y1"] <= hi_ + pad:
+                fig.add_trace(go.Scatter(x=[t["x0"].tz_convert("Asia/Seoul"), t["x1"].tz_convert("Asia/Seoul")], y=[t["y0"], t["y1"]], mode="lines", line=dict(color="#9ca3af", width=1, dash="dot"), hoverinfo="skip"))
+    else:
+        for lv, nm, col in ((v["res"], "저항", "#d64545"), (v["sup"], "지지", "#2e9e5b")):
+            if np.isfinite(lv):
+                fig.add_hline(y=lv, line_dash="dot", line_color=col, annotation_text=f"{nm} {lv:,.1f}", annotation_position="top left")
     fig.update_layout(height=320, margin=dict(l=5, r=5, t=10, b=5), xaxis_rangeslider_visible=False, showlegend=False)
     return fig
 
@@ -290,7 +311,7 @@ if SWING:
     render_journal()
     st.stop()
 
-st.caption("4시간 마감(01·05·09·13·17·21시) 직후 확인 · 마감가 기준 · 수익 보장 없음")
+st.caption("4시간 마감(01·05·09·13·17·21시) 뒤 확인 · 마감가로만 실행 (봉 중간 즉시 실행은 11년 검증에서 손해) · 수익 보장 없음")
 
 def f53_txt(f, sym):
     """5파·3파 판별 한 줄 (wave_live.fate53, 종가 기준)."""
@@ -460,21 +481,20 @@ def chip(t, tone=0):
     return f'<span style="display:inline-block;margin:3px 4px 0 0;padding:1px 8px;border-radius:10px;background:{col[1]};color:{col[0]};font-size:0.78rem;white-space:nowrap">{t}</span>'
 
 
-def badge(nm, price, word, strength, qty_line, action, sub, lines, next_t, chips="", conf="", entry="", hold=""):
+def badge(nm, price, word, strength, qty_line, action, sub, preview, lines, chips="", entry=""):
     bg, bd, ac, label = BADGE[word]
-    ln = ("".join(f'<div style="margin-top:3px">{x}</div>' for x in lines) + '<div style="margin-top:3px;color:#6b7280;font-size:0.8rem">그 밖의 가격이면 유지</div>') if lines else '<div style="margin-top:3px;color:#6b7280">어느 가격에 마감해도 그대로</div>'
+    ln = "".join(f'<div style="margin-top:2px">{x}</div>' for x in lines)
     return (f'<div style="border-radius:12px;padding:12px 14px 10px 14px;margin-bottom:12px;background:{bg};border:1px solid {bd};border-left:5px solid {ac};color:#374151;line-height:1.45">'
             f'<div style="display:flex;justify-content:space-between;align-items:baseline;gap:8px">'
-            f'<span style="font-size:1.45rem;font-weight:700;color:{ac}">{label}<span style="font-size:0.85rem;font-weight:500;color:#6b7280"> {strength}</span></span>'
-            f'<span style="font-size:0.9rem;color:#374151;font-weight:600;white-space:nowrap">{nm} {price}</span></div>'
-            f'<div style="font-size:1.0rem;font-weight:600;color:#1f2937">{qty_line}</div>'
-            + (f'<div style="margin-top:4px">{conf}</div>' if conf else "") +
-            f'<div style="margin-top:9px;padding:8px 10px;background:#ffffffcc;border-radius:8px;border:1px solid {bd}">'
-            f'<div style="font-size:0.74rem;color:#6b7280;margin-bottom:3px">지금 할 일 · {sub}</div>{action}'
-            + (f'<div style="font-size:0.78rem;color:#6b7280;margin-top:4px">{entry}</div>' if entry else "") + '</div>'
-            + (f'<div style="margin-top:6px;font-size:0.8rem;color:#374151">{hold}</div>' if hold else "") +
-            f'<div style="margin-top:8px;font-size:0.74rem;color:#6b7280">다음 {next_t:%H:%M} 마감가가</div><div style="font-size:0.86rem;color:#1f2937">{ln}</div>'
-            + (f'<div style="margin-top:8px;padding-top:6px;border-top:1px dashed {bd}">{chips}</div>' if chips else "") + '</div>')
+            f'<span style="font-size:1.5rem;font-weight:700;color:{ac}">{label}<span style="font-size:0.85rem;font-weight:500;color:#6b7280"> {strength}</span></span>'
+            f'<span style="font-size:0.95rem;color:#1f2937;font-weight:600;white-space:nowrap">{nm} {price}</span></div>'
+            f'<div style="font-size:0.95rem;font-weight:600;color:#1f2937">{qty_line}</div>'
+            f'<div style="margin-top:8px;padding:8px 10px;background:#ffffffdd;border-radius:8px;border:1px solid {bd}">'
+            f'<div style="font-size:0.72rem;color:#6b7280;margin-bottom:2px">지금 할 일 · {sub}</div>{action}'
+            + (f'<div style="font-size:0.76rem;color:#6b7280;margin-top:3px">{entry}</div>' if entry else "") + '</div>'
+            f'<div style="margin-top:8px;font-size:0.86rem;color:#1f2937">{preview}</div>'
+            + (f'<div style="margin-top:3px;font-size:0.84rem;color:#1f2937">{ln}</div>' if ln else "")
+            + (f'<div style="margin-top:7px">{chips}</div>' if chips else "") + '</div>')
 
 
 def desc(q, nm, dq):
@@ -525,9 +545,9 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     entry = ""
     if has and px:
         ent = px[2] if q_now < 0 else px[1]
-        entry = (f"진입·조정은 {'매도1호가' if q_now < 0 else '매수1호가'} {ent:,.{pf}f} 지정가" if MAKER else f"진입·조정은 시장가 (지금 {last:,.{pf}f})") + f" · {LEV_SET}배 격리 증거금 약 {abs(q_now)*last/LEV_SET:,.0f} USDT"
+        entry = (f"{'매도1호가' if q_now < 0 else '매수1호가'} {ent:,.{pf}f} 지정가" if MAKER else "시장가") + f" · {LEV_SET}배 격리 · 증거금 약 {abs(q_now)*last/LEV_SET:,.0f} USDT"
     elif abs(notional) > 0.5:
-        entry = f"목표 {abs(notional):.0f} USDT가 최소 단위 {stp} {nm}(약 {stp*last:,.0f} USDT)보다 작아 관망"
+        entry = f"목표 {abs(notional):.0f} USDT < 최소 {stp} {nm}(약 {stp*last:,.0f} USDT) → 관망"
     tab_info.markdown(f"**△ {nm} 참고**")
     # 다음 마감 기준 가장 가까운 '할 일이 생기는' 가격 (위·아래)
     T = CL.split_rows(v["trig"], ers) if ers else v["trig"]
@@ -568,16 +588,16 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
             kd, tx = TL.classify(q_now, edge[1], edge[0], e_now, stp, nm)
             if kd in ("부분익절", "익절") and trl and np.sign(raw_of(edge[2])) == trl.get("dir") and tfx(raw_of(edge[2]), CL.mid(edge[2])) < tf_now:
                 tx += " · 최고점 대비 2ATR 되돌림" + (" (½이 최소 주문 단위보다 작아 전량)" if (edge[1] == 0 and abs(tgt_of(edge[2])) > 0.5) else "")
-            lines.append(f"{arrow} <b>{edge[0]:,.{pf}f}</b> {word_} → " + TL.pill(kd, tx))
+            lines.append(f"{arrow} <b>{edge[0]:,.{pf}f}</b> {word_}로 마감 → " + TL.pill(kd, tx))
     # 상단 한눈 배지
     word = "관망" if not has else side
     vd = RL.verdict(v["dir"]); strength = ""
     if has:
         strength = "(강)" if "(강)" in vd else "(약)"
-        if not vd.startswith(side): strength = "(신호 약해짐 · 유지)"
+        if not vd.startswith(side): strength = "(약해짐)"
     change = q_prev != q_now
     action = TL.pill(kind, ktxt, big=True)
-    sub = (f"{close_t:%H:%M} 마감 기준 · {('내 포지션 ' + desc(ref_q, nm, dq)) if mine is not None else ('직전 목표 ' + desc(q_prev, nm, dq) + '를 따랐다면')}")
+    sub = f"{close_t:%H:%M} 마감 · " + ("내 포지션 기준" if mine is not None else f"직전 목표 {desc(q_prev, nm, dq)} 기준")
     hold = ""
     if has and e_now and e_src != "지금 가격":
         _pn = np.sign(q_now) * (last / e_now - 1)
@@ -588,9 +608,21 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
             elif trl.get("cut_px") is not None: hold += f" · 부분익절 감시 중 (최고 {trl['peak']:,.{pf}f})"
             else: hold += f" · {trl['arm_px']:,.{pf}f} {'위' if trl['dir'] > 0 else '아래'}까지 가면 부분익절 감시 시작"
     qline = (f"{abs(q_now):.{dq}f} {nm} · 약 {abs(q_now)*last:,.0f} USDT" if has else "포지션 없음")
+    if has and e_now and e_src != "지금 가격":
+        _pn = np.sign(q_now) * (last / e_now - 1)
+        qline += f" · 평단 {e_now:,.{pf}f} <b style='color:{'#15803d' if _pn >= 0 else '#b91c1c'}'>{_pn:+.1%}</b>"
+        if trl and np.sign(q_now) == trl.get("dir") and TRAIL and trl.get("cut"): qline += " · ½ 익절 완료"
+    # 지금 가격이면 다음 마감에 (마감 확인 뒤 실행 — research/intrabar.py: 봉 중간 즉시 실행은 손해)
+    _rw = next((r for r in T if (not np.isfinite(r["lo"]) or r["lo"] <= last) and (not np.isfinite(r["hi"]) or last < r["hi"])), None)
+    if _rw is not None:
+        _kp, _tp = TL.classify(q_now, qty(tgt_of(_rw), last, stp), last, e_now, stp, nm)
+        preview = (f"지금 가격({last:,.{pf}f})이면 {next_t:%H:%M} 마감에도 <b>그대로</b>" if _kp in ("유지", "관망")
+                   else f"지금 가격({last:,.{pf}f})으로 {next_t:%H:%M}에 마감하면 → " + TL.pill(_kp, _tp) + "<span style='font-size:0.76rem;color:#6b7280'>마감 확인 뒤 실행</span>")
+    else:
+        preview = ""
     arw = lambda x: "▲" if x > 0 else ("▼" if x < 0 else "―")
     _vd = RL.verdict(v["dir"]); _st = "강" if "(강)" in _vd else ("약" if "(약)" in _vd else "중립")
-    chips = chip(f"추세 {arw(v['dir']) if _st != '중립' else '―'} {_st}", v["dir"] if _st != "중립" else 0)
+    chips = chip(f"추세 {arw(v['dir']) if _st != '중립' else '―'} {_st}", v["dir"] if _st != "중립" else 0); more = ""
     mood = ""
     if v.get("fake_streak") is not None:
         mx = FAKE_RUNS.get(sym, {}).get("max_run")
@@ -618,17 +650,21 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         if wv.get("active"):
             _txt += f" → {'롱' if wv['dir'] > 0 else '숏'} 1.5배 · {wv['stop']:,.0f} {'아래' if wv['dir'] > 0 else '위'}면 해제" if WAVE else " (설정에서 켜야 반영)"
         mood += ("<br>" if mood else "") + _txt
-        chips += chip(f"파동 {_lab}" + (f" → {'롱' if wv['dir'] > 0 else '숏'} 1.5배" if (wv.get("active") and WAVE) else ""), wv["dir"] if wv.get("active") else 0)
+        _wc = chip(f"파동 {_lab}" + (f" → {'롱' if wv['dir'] > 0 else '숏'} 1.5배" if (wv.get("active") and WAVE) else ""), wv["dir"] if wv.get("active") else 0)
+        if wv.get("active") and WAVE: chips += _wc
+        else: more += _wc
     case = ""
     if OCH and nm in OCH:
         _oz = OCH[nm]["z"]
-        chips += chip(f"거래소 30일 {'순유출' if OCH[nm]['pct30'] < 0 else '순입금'} {_oz:+.1f}σ" + (f" → {'롱' if exs > 0 else '숏'} 쪽 +{abs(k * exs):,.0f}" if (EXCH and abs(k * exs) >= 0.5) else ""), _oz if abs(_oz) >= 0.5 else 0)
+        _exc = chip(f"거래소 30일 {'순유출' if OCH[nm]['pct30'] < 0 else '순입금'} {_oz:+.1f}σ" + (f" → {'롱' if exs > 0 else '숏'} 쪽 +{abs(k * exs):,.0f}" if (EXCH and abs(k * exs) >= 0.5) else ""), _oz if abs(_oz) >= 0.5 else 0)
+        if EXCH: chips += _exc
+        else: more += _exc
     if FLW and nm in FLW:
         import flow_live as FLv
         _sc = FLW[nm]["score"]
         _nd = FLW[nm].get("neg_days", 0)
-        if _nd >= 3: chips += chip(f"코인베이스 프리미엄 음수 {_nd:.0f}일째 (미국 수요 약함)", -1)
-        elif FLW[nm].get("pos_days", 0) >= 3: chips += chip(f"코인베이스 프리미엄 양수 {FLW[nm]['pos_days']:.0f}일째 (미국 수요 강함)", 1)
+        if _nd >= 3: more += chip(f"코인베이스 프리미엄 음수 {_nd:.0f}일째 (미국 수요 약함)", -1)
+        elif FLW[nm].get("pos_days", 0) >= 3: more += chip(f"코인베이스 프리미엄 양수 {FLW[nm]['pos_days']:.0f}일째 (미국 수요 강함)", 1)
         chips += chip(f"돈의 흐름 {FLv.label(_sc)} {_sc:+.1f}σ" + (f" → {'롱' if fl > 0 else '숏'} 쪽 +{abs(k * fl):,.0f}" if (FLOW and abs(k * fl) >= 0.5) else ""), _sc if abs(_sc) >= 0.5 else 0)
         if has and CASES:
             _ag = float(np.sign(q_now)) * _sc
@@ -641,7 +677,16 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     _fr = funding_rate(sym)
     if _fr is not None and has:
         _pay = np.sign(q_now) * _fr > 0; _day = abs(_fr) * 3 * abs(q_now) * last
-        chips += chip(f"펀딩 {_fr * 100:+.4f}%/8h · {side} {'냄' if _pay else '받음'} 하루 약 {_day:.2f} USDT" + (" · 과열" if abs(_fr) >= 0.0005 else ""), (-1 if _pay else 1) if (abs(_fr) >= 0.0005 or _day >= 0.01) else 0)
+        _fc = chip(f"펀딩 {_fr * 100:+.4f}%/8h · {side} {'냄' if _pay else '받음'} 하루 약 {_day:.2f} USDT" + (" · 과열" if abs(_fr) >= 0.0005 else ""), (-1 if _pay else 1) if (abs(_fr) >= 0.0005 or _day >= 0.01) else 0)
+        if abs(_fr) >= 0.0005: chips += _fc
+        else: more += _fc
+    _sv = None
+    if v.get("struct"):
+        try:
+            import structure_live as STR
+            _sv = STR.view(v["struct"], int(np.sign(q_now))); more += chip("구조 · " + _sv["chip"], 0)
+        except Exception:
+            _sv = None
     if DOM:
         import dominance_live as DL
         mood += "<br>" if mood else ""
@@ -657,9 +702,9 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         _tk = f"toast_{sym}_{close_t:%m%d%H}"
         if not st.session_state.get(_tk):
             st.session_state[_tk] = True
-            st.toast(f"{nm} {kind} — {ktxt}. 규칙대로 수익을 챙길 차례입니다.")
+            st.toast(f"{nm} {TL.NAME.get(kind, kind)} — {ktxt}. 규칙대로 수익을 챙길 차례입니다.")
     with badge_cols[i_c]:
-        st.markdown(badge(nm, f"${last:,.{pf}f}", word, strength, qline, action, sub, lines, next_t, chips, case, entry, hold), unsafe_allow_html=True)
+        st.markdown(badge(nm, f"${last:,.{pf}f}", word, strength, qline, action, sub, preview, lines, chips, entry if kind not in ("유지", "관망") or not has else ""), unsafe_allow_html=True)
     if mood:
         tab_info.markdown(f'<div style="font-size:0.85rem;color:#4b5563;line-height:1.5">{mood}</div>', unsafe_allow_html=True)
     tb = []; seg = []
@@ -674,8 +719,13 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         rng = "어느 가격이든" if not (lo or hi) else (f"{lo} 위" if not hi else (f"{hi} 아래" if not lo else f"{lo} ~ {hi}")); here = lo_ <= last < hi_
         tb.append({"다음 4H 마감가": rng + ("  ← 지금" if here else ""), "그때 포지션": (f"{'숏' if tgt < 0 else '롱'} {abs(tgt):.{dq}f} {nm} (약 {abs(tgt)*last:,.0f} USDT)" if tgt else "없음"),
                    "할 일": act})
-    _det = detail_box.expander(f"△ {nm} 전환 가격표 · 차트 ({next_t:%H:%M} 마감 기준)", expanded=False)
+    _det = detail_box.expander(f"△ {nm} 자세히 — 가격표 · 근거 · 차트", expanded=False)
+    if more or case: _det.markdown((case + "<br>" if case else "") + more, unsafe_allow_html=True)
+    _det.caption(f"{next_t:%H:%M} 마감가에 따라")
     _det.dataframe(pd.DataFrame(tb), hide_index=True, width="stretch")
+    if _sv:
+        _det.caption("구조 지도 · " + _sv["text"] + " — 방향은 앱, 구조는 '어디서 뚫리기 쉬운지'만 (크기엔 안 씀)")
+        _det.dataframe(pd.DataFrame([{**r, "가격": f"{r['가격']:,.{pf}f}"} for r in reversed(_sv["rows"])]), hide_index=True, width="stretch")
     sr = []
     if np.isfinite(v["res"]): sr.append(f"저항 {v['res']:,.1f}")
     if np.isfinite(v["sup"]): sr.append(f"지지 {v['sup']:,.1f}")
@@ -715,8 +765,7 @@ try:
     _tb = _cert["table"].get(f"{'maker' if MAKER else 'taker'}|{float(mult)}")
     if _tb:
         _y, _y3 = _tb["1년"], _tb["3년"]
-        exp_box.caption(f"이 설정(배율 {mult}, {'지정가' if MAKER else '시장가'})의 지난 성적을 섞어 본 기대: 1년 수익 날 확률 {_y['p']:.0%} · 중앙 {_y['med']:+.0%} · 나쁜 10% {_y['p10']:+.0%}"
-                        f" · 3년 안에 −30% 낙폭 겪을 확률 {_y3['dd30']:.0%}" + (f" ({_cert['period'][:7]}~ 기준, 좋았던 시기라 낙관적일 수 있음)" if 'period' in _cert else "") + " — 한 달은 동전 던지기, 신호를 건너뛰지 말 것")
+        exp_box.caption(f"배율 {mult} · 1년 뒤 수익일 확률 {_y['p']:.0%} · 중앙 {_y['med']:+.0%} · 나쁜 10% {_y['p10']:+.0%} · 한 달은 동전 던지기 → 신호를 건너뛰지 말 것")
         with tab_info.expander(f"△ 확실성 — 지금 설정(배율 {mult}, {'지정가' if MAKER else '시장가'})으로 하면", expanded=False):
             _rows = [{"기간": k, "수익 날 확률": f"{v['p']:.0%}", "중앙값": f"{v['med']:+.0%}", "나쁜 10%": f"{v['p10']:+.0%}", "좋은 10%": f"{v['p90']:+.0%}",
                       "중간에 −30% 낙폭 겪을 확률": f"{v['dd30']:.0%}"} for k, v in _tb.items()]
@@ -729,6 +778,55 @@ try:
 except Exception:
     pass
 
+with tab_info.expander("△ 마감 확인 vs 접속 즉시 실행 (11-26)", expanded=False):
+    st.markdown("""
+코인베이스 BTC·ETH 1시간 봉 11년, 앱 핵심(추세+호흡·변동성 상한·완충)+추적 부분익절을 '봉 중간에 지금 가격으로 마감했다면'으로 정확히 재계산 (마감 실행 0.03%, 봉 중간 0.06%).
+
+| 실행 방식 | 연 수익 (배율 1) | 샤프 | ETF 후 샤프 | 최대 낙폭 |
+|---|---|---|---|---|
+| **4H 마감 확인 뒤 (지금)** | **+31%** | **1.94** | **1.68** | −16% |
+| 매시간 지금 가격으로 즉시 | +27% | 1.77 | 1.28 | −12% |
+| 4H마다 한 번 접속해 즉시 | +29% | 1.84 | 1.30 | −15% |
+| 줄이기·손절만 즉시 | +26% | 1.81 | 1.42 | −12% |
+| 부분익절만 즉시 | +28% | 1.90 | 1.63 | −16% |
+- 수수료를 같게 해도 즉시 실행은 수익 −1.4%p, ETF 후 샤프 1.68→1.54. 봉 중간 돌파의 상당수가 마감 전에 되돌아와서 사고팔기만 늘어남(거래 535→1,003번/년).
+- 그래서 카드의 '지금 가격이면 …마감에'는 미리보기만, 실행은 마감 확인 뒤.
+""")
+with tab_info.expander("△ 구조 지도 — 엘리어트·지지저항·추세선·피보를 '가짜 레벨'과 겨루기 (11-26)", expanded=False):
+    st.markdown("""
+**재는 법**: 레벨 22종이 알려진 뒤 가격이 1.5ATR 떨어져 있다가 닿으면 → 1.5ATR 먼저 되튀면 '버팀', 반대로 1.5ATR 먼저 가면 '뚫림'.
+**가짜 레벨**(같은 레벨을 ±1.5~4ATR 옮김)과 비교하되, 직전 4H 파동 안의 **같은 위치**에 있는 가짜끼리 맞춰 비교 (교차 검토 반영 — 위치를 안 맞추면 효과가 약 2배 부풀려짐).
+코인베이스 BTC·ETH 1시간 11년(닿음 2.3만 번) · 알트 12개 4시간 5년(6만 번) · 가짜 시장 40개(하루 순서 섞기 20 · 하루 부호 뒤집기 20).
+
+**① 위치가 거의 다 정함** (직전 확정 4H 파동 A→B, 레벨 종류와 상관없이)
+| 닿은 자리 | 버팀 (BTC·ETH) | 알트 | 뜻 |
+|---|---|---|---|
+| 30~70% 되돌림 (받침 구역) | 53% | 54~55% | 가짜 시장 51~52% → 살짝 버팀 (+2%p) |
+| 90% 넘게 되돌림 · 시작점 A | **42% = 58% 뚫림** (앱 반대 방향 레벨 60%, ETF 후 55%) | 53% 뚫림 | 엘리어트 무효화선 근처는 아무 가격이나 잘 뚫림 |
+| 되돌림 뒤 끝 B 재시험 | 46% | 47% | 신고점·신저점 쪽 |
+- 시작점 − 받침 구역 버팀 차이: 실제 −11.8%p (BTC −10.0 · ETH −13.6) vs 가짜 시장 40개 −5.4 ~ +5.7%p → 우연 아님. 다만 '깊게 되돌리면 그 방향 계속'이라는 짧은 모멘텀과 같은 것.
+
+**② 같은 위치에서 레벨 종류가 더하는 몫** (진짜 − 같은 위치 가짜, 90% 구간)
+| 레벨 | BTC·ETH | 알트 12개 | 판정 |
+|---|---|---|---|
+| 전주 고가·저가 | −3.7%p (−5.4 ~ −1.6) | −1.5%p | 더 뚫림 (확실) |
+| 4H 꼭짓점 ×3 · ×6 | −1.7 · −2.3%p | −0.9 · −1.9%p | 조금 더 뚫림 |
+| 같은 고점·저점 두 번 | −2.9%p (−6.5 ~ +0.4) | −3.9%p | 더 뚫리는 쪽 (BTC·ETH는 확실하지 않음) |
+| 짧은 추세선 · 전월 고저 · 라운드 | −2~−4%p | −1~−3%p | 조금 더 뚫림 |
+| 피보 0.618 | +0.7%p (−1.3 ~ +2.4) | −1.9%p | **특별하지 않음** (그냥 쟀을 땐 +6.3%p였지만 위치 효과) |
+| AVWAP · 50/200일선 · 매물대 · 피보 확장 · 큰 추세선 | ±3%p 안, 코인·괄호마다 부호 바뀜 | | 무작위와 같음 |
+
+**③ 앱에 더하면** (코인베이스 2015~22 · 바이낸스 2018~22 · 비트겟 2022-08~ 엄격 판정)
+| 시도 | 결과 | 판정 |
+|---|---|---|
+| 시작점 이탈 쪽 주머니 ×¼ | 2.30→2.44 · 1.85→2.09 · **2.27→2.13** (앱 추세 통제 뒤 IC 0) | 기각 |
+| 안쪽 되돌림 쪽 · 둘 다 · 전주 고저 돌파 (×¼·×½) | 비트겟 2.27→1.45~2.06 | 기각 |
+| 받침 구역 지정가(0.5·0.618·0.7, 24시간) vs 마감가 | 신호당 −0.13~−0.17% (90% 구간 0 아래, 수수료 빼고도). 체결된 때의 시장가 성적 −0.2~−3.1% vs 안 체결 +2.1~+2.6% (역선택). ETF 후만 +0.1% | 기각 |
+| 시작점 손절 (7일 보유) | +0.10% (90% −0.10~+0.30%), ETF 후 −0.23% | 불확실 |
+
+**쓰는 법**: 방향은 앱. 카드 칩 '구조'와 전환 가격표 펼침의 구조 지도·차트(주황 점선 = 방아쇠, 초록 띠 = 받침 구역)로 어디서 뚫리기 쉬운지만 봄.
+시작점·전주 고저처럼 뚫리기 쉬운 곳에서 '지지받겠지' 반대 매매는 불리. 앱 쪽 방아쇠가 뚫리면 앱 방향이 맞아 가는 자리, 앱 반대 쪽 방아쇠가 뚫리면 앱 전환이 가까운 자리. 앱 진입은 그대로 마감가.
+""")
 with tab_info.expander("△ 없는 자료 만들기 2차 — 호가 깊이·청산 지도·대중 관심 (11-25)", expanded=False):
     st.markdown("""
 | 직접 만든 자료 | 검증 결과 | 판정 |
@@ -1375,7 +1473,7 @@ if SUMM:
             _bits.append(f"{x['nm']} {x['side']} <b style='color:{'#15803d' if x['pnl'] >= 0 else '#b91c1c'}'>{x['pnl']:+.1%}</b>")
         elif x["has"]: _bits.append(f"{x['nm']} {x['side']} 새로 시작")
         else: _bits.append(f"{x['nm']} 관망")
-    _head = ("<b>할 일 있음</b> · " + " · ".join(f"{x['nm']} {x['kind']}" for x in _todo)) if _todo else "<b>지금 할 일 없음</b> · 들고 기다리면 됩니다"
+    _head = ("<b>할 일 있음</b> · " + " · ".join(f"{x['nm']} {TL.NAME.get(x['kind'], x['kind'])}" for x in _todo)) if _todo else "<b>지금 할 일 없음</b> · 들고 기다리면 됩니다"
     top_box.markdown(f'<div style="padding:9px 12px;border-radius:10px;background:{"#fff7e6" if _todo else "#f1f7f3"};border:1px solid {"#f3d29b" if _todo else "#cfe5d7"};'
                      f'font-size:0.92rem;color:#1f2937;margin-bottom:10px">{_head} │ {" · ".join(_bits)} │ 다음 확인 {SUMM[0]["next"]:%H:%M}</div>', unsafe_allow_html=True)
 
