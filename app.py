@@ -531,6 +531,7 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
     wvf = (lambda p: WL.factor(v.get("wave"), float(np.sign(p)))) if WAVE else (lambda p: 1.0)
     wvr = (lambda r: WL.factor(v.get("wave"), float(np.sign(r["pos"])), CL.mid(r))) if WAVE else (lambda r: 1.0)   # 그 가격에 마감하면 (꼭짓점 되돌아 넘으면 해제)
     import trade_live as TL
+    KNAME = getattr(TL, "NAME", {"익절": "전부 익절", "손절": "전부 손절"})   # 예전 trade_live.py여도 동작
     trl = v.get("trail") if TRAIL else None
     tfx = (lambda raw, price=None: TL.factor(trl, float(np.sign(raw)), price)) if trl else (lambda raw, price=None: 1.0)
     _raw = k * (wt * v["pos"] * fx(v["pos"]) * wf * wvf(v["pos"]) + sp + tp)
@@ -702,7 +703,7 @@ for i_c, (sym, nm) in enumerate(COINS.items()):
         _tk = f"toast_{sym}_{close_t:%m%d%H}"
         if not st.session_state.get(_tk):
             st.session_state[_tk] = True
-            st.toast(f"{nm} {TL.NAME.get(kind, kind)} — {ktxt}. 규칙대로 수익을 챙길 차례입니다.")
+            st.toast(f"{nm} {KNAME.get(kind, kind)} — {ktxt}. 규칙대로 수익을 챙길 차례입니다.")
     with badge_cols[i_c]:
         st.markdown(badge(nm, f"${last:,.{pf}f}", word, strength, qline, action, sub, preview, lines, chips, entry if kind not in ("유지", "관망") or not has else ""), unsafe_allow_html=True)
     if mood:
@@ -1473,7 +1474,7 @@ if SUMM:
             _bits.append(f"{x['nm']} {x['side']} <b style='color:{'#15803d' if x['pnl'] >= 0 else '#b91c1c'}'>{x['pnl']:+.1%}</b>")
         elif x["has"]: _bits.append(f"{x['nm']} {x['side']} 새로 시작")
         else: _bits.append(f"{x['nm']} 관망")
-    _head = ("<b>할 일 있음</b> · " + " · ".join(f"{x['nm']} {TL.NAME.get(x['kind'], x['kind'])}" for x in _todo)) if _todo else "<b>지금 할 일 없음</b> · 들고 기다리면 됩니다"
+    _head = ("<b>할 일 있음</b> · " + " · ".join(f"{x['nm']} {KNAME.get(x['kind'], x['kind'])}" for x in _todo)) if _todo else "<b>지금 할 일 없음</b> · 들고 기다리면 됩니다"
     top_box.markdown(f'<div style="padding:9px 12px;border-radius:10px;background:{"#fff7e6" if _todo else "#f1f7f3"};border:1px solid {"#f3d29b" if _todo else "#cfe5d7"};'
                      f'font-size:0.92rem;color:#1f2937;margin-bottom:10px">{_head} │ {" · ".join(_bits)} │ 다음 확인 {SUMM[0]["next"]:%H:%M}</div>', unsafe_allow_html=True)
 
